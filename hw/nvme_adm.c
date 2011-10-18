@@ -241,6 +241,15 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return FAIL;
     }
 
+    /* Log's done to do unit testing */
+    LOG_NORM("Create SQ command for QID: %u", c->qid);
+    LOG_NORM("Create SQ command with Qsize: %u", c->qsize);
+    LOG_NORM("Create SQ command with PC bit: %u", c->pc);
+    LOG_NORM("Create SQ command with unique command ID: %u", c->cid);
+    LOG_NORM("Create SQ command with PRP1: %lu", c->prp1);
+    LOG_NORM("Create SQ command with PRP2: %lu", c->prp2);
+    LOG_NORM("Create SQ command is assoc with CQID: %u", c->cqid);
+
     if (c->qid == 0 || c->qid >= NVME_MAX_QID) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;

@@ -68,7 +68,6 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     uint32_t pg_no, entr_per_pg;
 
     cq_id = n->sq[sq_id].cq_id;
-
     if (is_cq_full(n, cq_id)) {
         return;
     }

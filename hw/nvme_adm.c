@@ -67,91 +67,50 @@ uint8_t nvme_admin_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 
 static uint32_t adm_check_cqid(NVMEState *n, uint16_t cqid)
 {
-    uint16_t i;
-    if (!n) {
-        return FAIL;
-    }
     LOG_NORM("kw q: check if exists cqid %d\n", cqid);
     /* If queue is allocated dma_addr!=NULL and has the same ID */
-    for (i = 0; i < NVME_MAX_QID; i++) {
-        if (n->cq[i].dma_addr && n->cq[i].id == cqid) {
-            return 0;
-        }
+    if (cqid >= NVME_MAX_QID) {
+        return FAIL;
+    } else if (n->cq[cqid].dma_addr && n->cq[cqid].id == cqid) {
+        return 0;
+    } else {
+      return FAIL;
     }
-
-    return FAIL;
 }
 
 static uint32_t adm_check_sqid(NVMEState *n, uint16_t sqid)
 {
-    uint16_t i;
-
-    if (!n) {
+    /* If queue is allocated dma_addr!=NULL and has the same ID */
+    if (sqid >= NVME_MAX_QID) {
+        return FAIL;
+    } else if (n->sq[sqid].dma_addr && n->sq[sqid].id == sqid) {
+        return 0;
+    } else {
         return FAIL;
     }
-    /* If queue is allocated dma_addr!=NULL and has the same ID */
-    for (i = 0; i < NVME_MAX_QID; i++) {
-        if (n->sq[i].dma_addr && n->sq[i].id == sqid) {
-            return 0;
-        }
-    }
-
-    return FAIL;
-}
-static uint16_t adm_get_free_cq(NVMEState *n)
-{
-    uint16_t i;
-
-    for (i = 0; i < NVME_MAX_QID; i++) {
-        if (!n->cq[i].dma_addr) {
-            break;
-        }
-    }
-    return i;
 }
 
 static uint16_t adm_get_sq(NVMEState *n, uint16_t sqid)
 {
-    uint16_t i;
-
-    if (!n) {
+    if (sqid >= NVME_MAX_QID) {
+        return NVME_MAX_QID;
+    } else if (n->sq[sqid].dma_addr && n->sq[sqid].id == sqid) {
+        return sqid;
+    } else {
         return NVME_MAX_QID;
     }
-    for (i = 0; i < NVME_MAX_QID; i++) {
-        if (n->sq[i].dma_addr && n->sq[i].id == sqid) {
-            break;
-        }
-    }
-    return i;
 }
 
 static uint16_t adm_get_cq(NVMEState *n, uint16_t cqid)
 {
-    uint16_t i;
-
-    if (!n) {
+    if (cqid >= NVME_MAX_QID) {
+        return NVME_MAX_QID;
+    } else if (n->cq[cqid].dma_addr && n->cq[cqid].id == cqid) {
+        return cqid;
+    } else {
         return NVME_MAX_QID;
     }
 
-    for (i = 0; i < NVME_MAX_QID; i++) {
-        if (n->cq[i].dma_addr && n->cq[i].id == cqid) {
-            break;
-        }
-    }
-
-    return i;
-}
-
-static uint16_t adm_get_free_sq(NVMEState *n)
-{
-    uint16_t i;
-
-    for (i = 0; i < NVME_MAX_QID; i++) {
-        if (!n->sq[i].dma_addr) {
-            break;
-        }
-    }
-    return i;
 }
 
 /* FIXME: For now allow only empty queue. */
@@ -162,11 +121,17 @@ static uint32_t adm_cmd_del_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     NVMEAdmCmdDeleteSQ *c = (NVMEAdmCmdDeleteSQ *)cmd;
     NVMEIOCQueue *cq;
     NVMEIOSQueue *sq;
-    uint16_t i;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    uint16_t i;
     sf->sc = NVME_SC_SUCCESS;
 
     LOG_NORM("%s(): called with QID:%d", __func__, c->qid);
+
+    if (!n) {
+        return FAIL;
+    }
+    /* Log's done to do unit testing */
+    LOG_DBG("Delete SQ command for SQID: %u", c->qid);
 
     if (cmd->opcode != NVME_ADM_CMD_DELETE_SQ) {
         LOG_NORM("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
@@ -182,25 +147,18 @@ static uint32_t adm_cmd_del_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     i = adm_get_sq(n, c->qid);
     if (i == NVME_MAX_QID) {
+        LOG_NORM("No such queue: SQ %d\n", c->qid);
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
         return FAIL;
     }
-
     sq = &n->sq[i];
     if (sq->tail != sq->head) {
         /* Queue not empty */
     }
 
     if (sq->cq_id != NVME_MAX_QID) {
-        i = adm_get_sq(n, sq->cq_id);
-        if (i == NVME_MAX_QID) {
-            sf->sct = NVME_SCT_CMD_SPEC_ERR;
-            sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
-            return FAIL;
-        }
-
-        cq = &n->cq[i];
+        cq = &n->cq[sq->cq_id];
         if (cq->id == NVME_MAX_QID) {
             /* error */
             sf->sct = NVME_SCT_CMD_SPEC_ERR;
@@ -229,21 +187,35 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEAdmCmdCreateSQ *c = (NVMEAdmCmdCreateSQ *)cmd;
     NVMEIOSQueue *sq;
-    uint16_t id, *mqes;
+    uint16_t *mqes;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     sf->sc = NVME_SC_SUCCESS;
 
     LOG_NORM("%s(): called\n", __func__);
 
+    if (!n) {
+        return FAIL;
+    }
+
     if (cmd->opcode != NVME_ADM_CMD_CREATE_SQ) {
-        LOG_NORM("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
+        LOG_ERR("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
 
+    /* Log's done to do unit testing */
+    LOG_DBG("Create SQ command for QID: %u", c->qid);
+    LOG_DBG("Create SQ command with Qsize: %u", c->qsize);
+    LOG_DBG("Create SQ command with PC bit: %u", c->pc);
+    LOG_DBG("Create SQ command with unique command ID: %u", c->cid);
+    LOG_DBG("Create SQ command with PRP1: %lu", c->prp1);
+    LOG_DBG("Create SQ command with PRP2: %lu", c->prp2);
+    LOG_DBG("Create SQ command is assoc with CQID: %u", c->cqid);
+
     if (c->qid == 0 || c->qid >= NVME_MAX_QID) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
+        LOG_ERR("NVME_INVALID_QUEUE_IDENTIFIER in Command");
         return FAIL;
     }
 
@@ -251,6 +223,7 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     if (!adm_check_sqid(n, c->qid)) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
+        LOG_ERR("SQID in command already allocated/invalid ID ");
         return FAIL;
     }
 
@@ -259,19 +232,21 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         cqe->status = NVME_SC_INVALID_FIELD << 1;
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_COMPLETION_QUEUE_INVALID;
+        LOG_ERR("CQID in command not allocated ");
         return FAIL;
     }
     mqes = (uint16_t *) n->cntrl_reg;
 
     /* Queue Size */
-    if (c->qsize > *mqes) {
+    if (c->qsize > (*mqes + 1)) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_MAX_QUEUE_SIZE_EXCEEDED;
+        LOG_ERR("MQES %u exceeded", (*mqes + 1));
         return FAIL;
     }
 
     if ((c->pc == 0) && (*(mqes + 0x01) & 0x01)) {
-        LOG_NORM("CAP.CQR set to 1.Thus\
+        LOG_ERR("CAP.CQR set to 1.Thus\
             controller supports only contiguous IO queues");
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
@@ -279,21 +254,12 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     /* In PRP1 is DMA address. Chapter 5.4, Figure 36 */
     if (c->prp1 == 0) {
-        LOG_NORM("No address\n");
+        LOG_ERR("No address\n");
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
 
-    id = adm_get_free_sq(n);
-    if (id == NVME_MAX_QID) {
-        /* Failed */
-        LOG_NORM("No free queue ID ???\n");
-        sf->sct = NVME_SCT_CMD_SPEC_ERR;
-        sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
-        return FAIL;
-    }
-
-    sq = &n->sq[id];
+    sq = &n->sq[c->qid];
     sq->id = c->qid;
     sq->size = c->qsize;
     sq->phys_contig = c->pc;
@@ -301,7 +267,7 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     sq->prio = c->qprio;
     sq->dma_addr = c->prp1;
 
-    LOG_NORM("sq->id %d, sq->dma_addr 0x%x, %lu\n",
+    LOG_DBG("sq->id %d, sq->dma_addr 0x%x, %lu\n",
         sq->id, (unsigned int)sq->dma_addr,
         (unsigned long int)sq->dma_addr);
 
@@ -315,24 +281,32 @@ static uint32_t adm_cmd_del_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEAdmCmdDeleteCQ *c = (NVMEAdmCmdDeleteCQ *)cmd;
     NVMEIOCQueue *cq;
-    uint16_t i;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    uint16_t i;
     sf->sc = NVME_SC_SUCCESS;
 
     LOG_NORM("%s(): called\n", __func__);
 
+    if (!n) {
+        return FAIL;
+    }
+
+    /* Log's done to do unit testing */
+    LOG_DBG("Delete CQ command for CQID: %u", c->qid);
+
     if (cmd->opcode != NVME_ADM_CMD_DELETE_CQ) {
-        LOG_NORM("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
+        LOG_ERR("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
 
     if (c->qid == 0 || c->qid > NVME_MAX_QID) {
-        LOG_NORM("Invalid Queue ID %d\n", c->qid);
+        LOG_ERR("Invalid Queue ID %d\n", c->qid);
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
         return FAIL;
     }
+
 
     i = adm_get_cq(n, c->qid);
     if (i == NVME_MAX_QID) {
@@ -341,8 +315,8 @@ static uint32_t adm_cmd_del_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
         return FAIL;
     }
-
     cq = &n->cq[i];
+
     if (cq->tail != cq->head) {
         /* Queue not empty */
         /* error */
@@ -350,7 +324,7 @@ static uint32_t adm_cmd_del_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     /* Do not allow to delete CQ when some SQ is pointing on it. */
     if (cq->usage_cnt) {
-        LOG_NORM("Error. Some sq are still connected to CQ %d\n", c->qid);
+        LOG_ERR("Error. Some sq are still connected to CQ %d\n", c->qid);
         sf->sc = NVME_SC_INVALID_FIELD;
         return NVME_SC_INVALID_FIELD;
     }
@@ -360,6 +334,7 @@ static uint32_t adm_cmd_del_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     cq->size = 0;
     cq->irq_enabled = 0;
     cq->vector = 0;
+    cq->dma_addr = 0;
     cq->phys_contig = 0;
 
     return 0;
@@ -369,53 +344,66 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEAdmCmdCreateCQ *c = (NVMEAdmCmdCreateCQ *)cmd;
     NVMEIOCQueue *cq;
-    uint16_t id, *mqes;
+    uint16_t *mqes;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     sf->sc = NVME_SC_SUCCESS;
 
     LOG_NORM("%s(): called\n", __func__);
 
+    if (!n) {
+        return FAIL;
+    }
+    /* Log's done to do unit testing */
+    LOG_DBG("Create CQ command for QID: %u", c->qid);
+    LOG_DBG("Create CQ command with Qsize: %u", c->qsize);
+    LOG_DBG("Create CQ command with PC bit: %u", c->pc);
+    LOG_DBG("Create CQ command with unique command ID: %u", c->cid);
+    LOG_DBG("Create CQ command with PRP1: %lu", c->prp1);
+    LOG_DBG("Create CQ command with PRP2: %lu", c->prp2);
+
     if (cmd->opcode != NVME_ADM_CMD_CREATE_CQ) {
-        LOG_NORM("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
+        LOG_ERR("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
 
     if (c->qid == 0 || c->qid >= NVME_MAX_QID) {
-        LOG_NORM("c->qid == 0 || c->qid >= NVME_MAX_QID\n");
+        LOG_ERR("c->qid == 0 || c->qid >= NVME_MAX_QID\n");
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
+        LOG_ERR("NVME_INVALID_QUEUE_IDENTIFIER in Command");
         return FAIL;
     }
 
     /* check if CQ exists., If yes return error */
     if (!adm_check_cqid(n, c->qid)) {
-        LOG_NORM("Invalid CQ ID %d\n", c->qid);
+        LOG_ERR("Invalid CQ ID %d\n", c->qid);
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
+        LOG_ERR("CQID in command not allocated/invalid ID ");
         return FAIL;
     }
 
     mqes = (uint16_t *) n->cntrl_reg;
 
     /* Queue Size */
-    if (c->qsize > *mqes) {
-        LOG_NORM("c->qsize %d, CAP.MQES %d\n",
+    if (c->qsize > (*mqes + 1)) {
+        LOG_ERR("c->qsize %d, CAP.MQES %d\n",
             c->qsize, *mqes);
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_MAX_QUEUE_SIZE_EXCEEDED;
+        LOG_ERR("MQES %u exceeded", (*mqes + 1));
         return FAIL;
     }
 
     if ((c->pc == 0) && (*(mqes + 0x01) & 0x01)) {
-        LOG_NORM("CAP.CQR set to 1.Thus\
-            controller supports only contiguous IO queues");
+        LOG_ERR("CAP.CQR set to 1");
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
     /* In PRP1 is DMA address. */
     if (c->prp1 == 0) {
-        LOG_NORM("c->prp1 == 0\n");
+        LOG_ERR("c->prp1 == 0\n");
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
@@ -426,14 +414,8 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_INVALID_INTERRUPT_VECTOR;
         return FAIL;
     }
-    id = adm_get_free_cq(n);
-    if (id == NVME_MAX_QID) {
-        LOG_NORM("i == NVME_MAX_QID\n");
-        sf->sc = NVME_SC_INVALID_FIELD;
-        return FAIL;
-    }
 
-    cq = &n->cq[id];
+    cq = &n->cq[c->qid];
 
     cq->id = c->qid;
     cq->dma_addr = c->prp1;

@@ -53,15 +53,17 @@ static uint8_t do_rw_prp(NVMEState *n, uint64_t mem_addr, uint64_t data_size,
         }
         switch (rw) {
         case NVME_CMD_READ:
+            LOG_DBG("Read cmd called");
             nvme_dma_mem_write(mem_addr + m_offset,
                 mapping_addr + f_offset, len);
             break;
         case NVME_CMD_WRITE:
+            LOG_DBG("Write cmd called");
             nvme_dma_mem_read(mem_addr + m_offset,
                 mapping_addr + f_offset, len);
             break;
         default:
-            LOG_NORM("Error- wrong opcode: %d\n", rw);
+            LOG_ERR("Error- wrong opcode: %d\n", rw);
             break;
         }
 
@@ -91,6 +93,7 @@ static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command)
     total = (cmd->nlb + 1) * NVME_BLOCK_SIZE;
 
     len = PAGE_SIZE;
+
     offset = cmd->slba * NVME_BLOCK_SIZE;
 
     res = do_rw_prp(n, cmd->prp1, len, offset, cmd->opcode);
@@ -133,6 +136,8 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 {
     struct NVME_rw *e = (struct NVME_rw *)sqe;
     uint8_t res = FAIL;
+
+    LOG_NORM("%s(): called", __func__);
 
     if (sqe->opcode == NVME_CMD_FLUSH) {
         return NVME_SC_SUCCESS;

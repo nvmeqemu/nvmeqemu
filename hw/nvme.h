@@ -13,7 +13,8 @@
 /* Config FIlE names */
 #define NVME_CONFIG_FILE "NVME_device_NVME_config"
 #define PCI_CONFIG_FILE "NVME_device_PCI_config"
-
+/* Page size supported by the hardware */
+#define PAGE_SIZE 4096
 /* Should be in pci class someday. */
 #define PCI_CLASS_STORAGE_EXPRESS 0x010802
 /* Device ID for NVME Device */

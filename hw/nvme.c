@@ -245,21 +245,19 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
             break;
         case NVME_ASQ:
             nvme_cntrl_write_config(nvme_dev, NVME_ASQ, val, DWORD);
-            nvme_dev->sq[ASQ_ID].dma_addr |= val;
+            *((uint32_t *) &nvme_dev->sq[ASQ_ID].dma_addr) = val;
             break;
         case (NVME_ASQ + 4):
             nvme_cntrl_write_config(nvme_dev, (NVME_ASQ + 4), val, DWORD);
-            nvme_dev->sq[ASQ_ID].dma_addr |=
-                    (uint64_t)((uint64_t)val << 32);
+            *((uint32_t *) (&nvme_dev->sq[ASQ_ID].dma_addr) + 1) = val;
             break;
         case NVME_ACQ:
             nvme_cntrl_write_config(nvme_dev, NVME_ACQ, val, DWORD);
-            nvme_dev->cq[ACQ_ID].dma_addr |= val;
+            *((uint32_t *) &nvme_dev->cq[ACQ_ID].dma_addr) = val;
             break;
         case (NVME_ACQ + 4):
             nvme_cntrl_write_config(nvme_dev, (NVME_ACQ + 4), val, DWORD);
-            nvme_dev->cq[ACQ_ID].dma_addr |=
-                    (uint64_t)((uint64_t)val << 32);
+            *((uint32_t *) (&nvme_dev->cq[ACQ_ID].dma_addr) + 1) = val;
             break;
         default:
             break;

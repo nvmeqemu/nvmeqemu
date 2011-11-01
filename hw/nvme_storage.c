@@ -23,7 +23,7 @@
 #include <sys/mman.h>
 
 #define NVME_STORAGE_FILE_NAME "nvme_store.img"
-#define PAGE_SIZE 4096
+
 
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len)

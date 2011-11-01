@@ -1,6 +1,6 @@
 #define APPNAME         "qnvme"
 #define LEVEL           APPNAME
-/* #define DEBUG */
+#define DEBUG
 
 #define LOG_NORM(fmt, ...)    \
     printf("%s: " fmt "\n", LEVEL, ## __VA_ARGS__)

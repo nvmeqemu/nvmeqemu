@@ -101,6 +101,7 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     if (sq_id == ASQ_ID) {
         nvme_admin_command(n, &sqe, &cqe);
     } else {
+       /* TODO add support for IO commands with different sizes of Q elements */
         nvme_io_command(n, &sqe, &cqe);
     }
     cqe.sq_id = sq_id;

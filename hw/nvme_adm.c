@@ -452,6 +452,7 @@ static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
 {
     NVMEIdentifyController *ctrl;
     struct power_state_description *power;
+    uint32_t len;
 
     LOG_NORM("%s(): called\n", __func__);
 
@@ -484,21 +485,23 @@ static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
 
     power = (struct power_state_description *)&(ctrl->psd0);
     power->mp = 1;
-    /* LOG_NORM("psd0[0] %x, psd0[1] %x\n", ctrl->psd0[0], ctrl->psd0[1]); */
 
     power = (struct power_state_description *)&(ctrl->psdx[0]);
     power->mp = 2;
-    /* LOG_NORM("psdx[0] %x, psdx[1] %x\n", ctrl->psdx[0], ctrl->psdx[1]); */
 
     power = (struct power_state_description *)&(ctrl->psdx[32]);
     power->mp = 3;
-    /* LOG_NORM("psdx[32] %x, psdx[33] %x\n", ctrl->psdx[32],
-     * ctrl->psdx[33]); */
 
     LOG_NORM("%s(): copying %lu data into addr %lu\n",
         __func__, sizeof(*ctrl), cmd->prp1);
 
-    nvme_dma_mem_write(cmd->prp1, (uint8_t *)ctrl, sizeof(*ctrl));
+    len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
+    nvme_dma_mem_write(cmd->prp1, (uint8_t *)ctrl, len);
+    if (len != sizeof(*ctrl)) {
+        LOG_DBG("Filling data to prp2");
+        nvme_dma_mem_write(cmd->prp2, (uint8_t *)(ctrl + len),
+            sizeof(*ctrl) - len);
+    }
 
     qemu_free(ctrl);
     return 0;
@@ -508,7 +511,7 @@ static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
 static uint32_t adm_cmd_id_ns(NVMEState *n, NVMECmd *cmd)
 {
     NVMEIdentifyNamespace *ns;
-
+    uint32_t len;
     LOG_NORM("%s(): called\n", __func__);
 
     ns = qemu_mallocz(sizeof(*ns));
@@ -532,9 +535,13 @@ static uint32_t adm_cmd_id_ns(NVMEState *n, NVMECmd *cmd)
     ns->flbas = 0;    /* [26] Formatted LBA Size */
     LOG_NORM("kw q: ns->ncap: %lu\n", ns->ncap);
 
-
-    nvme_dma_mem_write(cmd->prp1, (void *)ns, sizeof(*ns));
-
+    len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
+    nvme_dma_mem_write(cmd->prp1, (uint8_t *)ns, len);
+    if (len != sizeof(*ns)) {
+        LOG_DBG("Filling data to prp2");
+        nvme_dma_mem_write(cmd->prp2, (uint8_t *)(ns + len),
+            sizeof(*ns) - len);
+    }
     qemu_free(ns);
     return 0;
 }
@@ -542,8 +549,6 @@ static uint32_t adm_cmd_id_ns(NVMEState *n, NVMECmd *cmd)
 static uint32_t adm_cmd_identify(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEAdmCmdIdentify *c = (NVMEAdmCmdIdentify *)cmd;
-    /* TODO: uint16_t controller; */
-    /* TODO: target_phys_addr_t addr; */
     uint8_t ret;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     sf->sc = NVME_SC_SUCCESS;
@@ -551,24 +556,16 @@ static uint32_t adm_cmd_identify(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_NORM("%s(): called\n", __func__);
 
     if (cmd->opcode != NVME_ADM_CMD_IDENTIFY) {
-        LOG_NORM("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
+        LOG_ERR("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
-    }
-    if (c->prp2) {
-        /* Don't like it! */
-        LOG_NORM("%s(): prp2 is set\n", __func__);
     }
 
     if (c->prp1 == 0) {
-        /* Error!*/
-        LOG_NORM("%s(): prp1 is not set\n", __func__);
-        sf->sc = NVME_SC_INVALID_OPCODE;
+        LOG_ERR("%s(): prp1 absent\n", __func__);
+        sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
-
-    /* TODO: controller = c->cns; */
-    /* TODO: addr = c->prp1; */
 
     /* Construct some data and copy it to the addr.*/
     if (c->cns == NVME_IDENTIFY_CONTROLLER) {

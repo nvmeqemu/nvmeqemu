@@ -498,9 +498,10 @@ static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
     len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
     nvme_dma_mem_write(cmd->prp1, (uint8_t *)ctrl, len);
     if (len != sizeof(*ctrl)) {
-        LOG_DBG("Filling data to prp2");
-        nvme_dma_mem_write(cmd->prp2, (uint8_t *)(ctrl + len),
-            sizeof(*ctrl) - len);
+        LOG_DBG("Len:%u is not equal to Size of Ctrl: %lu", len,
+            sizeof(*ctrl));
+    /*    nvme_dma_mem_write(cmd->prp2, (uint8_t *)(ctrl + len),
+            sizeof(*ctrl) - len);*/
     }
 
     qemu_free(ctrl);
@@ -538,9 +539,10 @@ static uint32_t adm_cmd_id_ns(NVMEState *n, NVMECmd *cmd)
     len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
     nvme_dma_mem_write(cmd->prp1, (uint8_t *)ns, len);
     if (len != sizeof(*ns)) {
-        LOG_DBG("Filling data to prp2");
-        nvme_dma_mem_write(cmd->prp2, (uint8_t *)(ns + len),
-            sizeof(*ns) - len);
+        LOG_DBG("Len:%u is not equal to Size of Ctrl: %lu", len,
+            sizeof(*ns));
+    /*    nvme_dma_mem_write(cmd->prp2, (uint8_t *)(ns + len),
+            sizeof(*ns) - len);*/
     }
     qemu_free(ns);
     return 0;

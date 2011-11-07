@@ -56,7 +56,8 @@
 
 #define NVME_MAX_QID 64
 
-#define NVME_MAX_QUEUE_SIZE 1024
+/* Size of PRP entry in bytes */
+#define PRP_ENTRY_SIZE 8
 
 /* Queue Limit.*/
 #define NVME_MSIX_NVECTORS 32
@@ -315,6 +316,8 @@ typedef struct NVMEState {
     int64_t sq_processing_timer_target;
     /* Used for PIN based and MSI interrupts */
     uint32_t intr_vect;
+    /* Page Size used by the hardware */
+    uint32_t page_size;
 } NVMEState;
 
 /* Structure used for default initialization sequence (except doorbell) */

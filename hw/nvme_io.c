@@ -56,17 +56,48 @@ static uint8_t abort_command(NVMEState *n, uint16_t sq_id, NVMECmd *sqe)
     return 0;
 }
 
+/* Used to get the required Queue entry for discontig SQ and CQ
+ * Returns- dma address
+ */
+static uint64_t find_discontig_queue_entry(uint32_t pg_size, uint16_t queue_ptr,
+    uint32_t cmd_size, uint64_t st_dma_addr) {
+    uint32_t index = 0;
+    uint32_t pg_no, prp_pg_no, entr_per_pg, prps_per_pg, prp_entry, pg_entry;
+    uint64_t dma_addr, entry_addr;
+
+    /* All PRP entries start with offset 00h */
+    entr_per_pg = (uint32_t) (pg_size / cmd_size);
+    /* pg_no and prp_pg_no start with 0 */
+    pg_no = (uint32_t) (queue_ptr / entr_per_pg);
+    pg_entry = (uint32_t) (queue_ptr % entr_per_pg);
+    LOG_DBG("Pg no: %d", pg_no);
+
+    prps_per_pg = (uint32_t) (pg_size / PRP_ENTRY_SIZE);
+    prp_pg_no = (uint32_t) (pg_no / (prps_per_pg - 1));
+    prp_entry = (uint32_t) (pg_no % (prps_per_pg - 1));
+
+    /* Get to the correct page */
+    for (index = 1; index <= prp_pg_no; index++) {
+        nvme_dma_mem_read((st_dma_addr + ((prps_per_pg - 1) * PRP_ENTRY_SIZE)),
+            (uint8_t *)&dma_addr, PRP_ENTRY_SIZE);
+        st_dma_addr = dma_addr;
+    }
+
+    /* Correct offset within the prp list page */
+    dma_addr = st_dma_addr + (prp_entry * PRP_ENTRY_SIZE);
+    /* Correct offset within the page */
+    entry_addr = dma_addr + (pg_entry * cmd_size);
+    return entry_addr;
+}
+
 void process_sq(NVMEState *n, uint16_t sq_id)
 {
-    target_phys_addr_t addr, pg_addr;
+    target_phys_addr_t addr;
     uint16_t cq_id;
     NVMECmd sqe;
     NVMECQE cqe;
-    /* TODO: uint32_t ret = NVME_SC_DATA_XFER_ERROR; */
     NVMEStatusField *sf = (NVMEStatusField *) &cqe.status;
-    uint16_t mps;
-    uint32_t pg_no, entr_per_pg;
-
+    NVMECmdWrite *temp;
     cq_id = n->sq[sq_id].cq_id;
     if (is_cq_full(n, cq_id)) {
         return;
@@ -78,18 +109,18 @@ void process_sq(NVMEState *n, uint16_t sq_id)
         addr = n->sq[sq_id].dma_addr + n->sq[sq_id].head * sizeof(sqe);
     } else {
         /* PRP implementation */
-        memcpy(&mps, &n->cntrl_reg[NVME_CC], WORD);
-        LOG_DBG("Mask: %x", MASK(4, 7));
-        mps &= (uint16_t) MASK(4, 7);
-        mps >>= 7;
-        LOG_DBG("CC.MPS:%x", mps);
-        entr_per_pg = (uint32_t) ((1 << (12 + mps))/sizeof(sqe));
-        pg_no = (uint32_t) (n->sq[sq_id].head / entr_per_pg);
-        nvme_dma_mem_read(n->sq[sq_id].dma_addr + (pg_no * QWORD),
-            (uint8_t *)&pg_addr, QWORD);
-        addr = pg_addr + (n->sq[sq_id].head % entr_per_pg) * sizeof(sqe);
+        addr = find_discontig_queue_entry(n->page_size, n->sq[sq_id].head,
+            sizeof(sqe), n->sq[sq_id].dma_addr);
     }
     nvme_dma_mem_read(addr, (uint8_t *)&sqe, sizeof(sqe));
+
+    temp = (NVMECmdWrite *) &sqe;
+
+    LOG_DBG("SQ Command Opcode: %u", temp->opcode);
+    LOG_DBG("SQ Command NLB: %u", temp->nlb);
+    LOG_DBG("SQ Command prp1: %lx", temp->prp1);
+    LOG_DBG("SQ Command prp2: %lx", temp->prp2);
+
 
     if (n->abort) {
         if (abort_command(n, sq_id, &sqe)) {
@@ -117,16 +148,8 @@ void process_sq(NVMEState *n, uint16_t sq_id)
         addr = n->cq[cq_id].dma_addr + n->cq[cq_id].tail * sizeof(cqe);
     } else {
         /* PRP implementation */
-        memcpy(&mps, &n->cntrl_reg[NVME_CC], WORD);
-        LOG_DBG("Mask: %x", MASK(4, 7));
-        mps &= (uint16_t) MASK(4, 7);
-        mps >>= 7;
-        LOG_DBG("CC.MPS:%x", mps);
-        entr_per_pg = (uint32_t) ((1 << (12 + mps))/sizeof(cqe));
-        pg_no = (uint32_t) (n->cq[cq_id].tail / entr_per_pg);
-        nvme_dma_mem_read(n->cq[cq_id].dma_addr + (pg_no * QWORD),
-            (uint8_t *)&pg_addr, QWORD);
-        addr = pg_addr + (n->cq[cq_id].tail % entr_per_pg) * sizeof(cqe);
+        addr = find_discontig_queue_entry(n->page_size, n->cq[cq_id].tail,
+            sizeof(cqe), n->cq[cq_id].dma_addr);
     }
     nvme_dma_mem_write(addr, (uint8_t *)&cqe, sizeof(cqe));
 
@@ -150,6 +173,3 @@ void process_sq(NVMEState *n, uint16_t sq_id)
 
 
 }
-
-
-

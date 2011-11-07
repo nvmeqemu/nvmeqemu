@@ -744,8 +744,8 @@ static void read_file(NVMEState *n, uint8_t space)
 static int pci_nvme_init(PCIDevice *pci_dev)
 {
     NVMEState *n = DO_UPCAST(NVMEState, dev, pci_dev);
-    /* TODO: uint8_t *pci_conf = NULL; */
     uint32_t ret;
+    uint16_t mps;
 
     /* TODO: pci_conf = n->dev.config; */
     n->nvectors = NVME_MSIX_NVECTORS;
@@ -816,6 +816,14 @@ static int pci_nvme_init(PCIDevice *pci_dev)
         memset(&(n->cq[ret]), 0, sizeof(NVMEIOCQueue));
     }
 
+    /* Reading CC.MPS field */
+    memcpy(&mps, &n->cntrl_reg[NVME_CC], WORD);
+    LOG_DBG("Mask: %x", MASK(4, 7));
+    mps &= (uint16_t) MASK(4, 7);
+    mps >>= 7;
+
+    n->page_size = (1 << (12 + mps));
+    LOG_DBG("Page Size: %d", n->page_size);
     n->fd = -1;
     n->mapping_addr = NULL;
     n->sq_processing_timer = qemu_new_timer_ns(vm_clock,

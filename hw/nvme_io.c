@@ -111,6 +111,7 @@ void process_sq(NVMEState *n, uint16_t sq_id)
         /* PRP implementation */
         addr = find_discontig_queue_entry(n->page_size, n->sq[sq_id].head,
             sizeof(sqe), n->sq[sq_id].dma_addr);
+        LOG_DBG("Address Returned:%lx", addr);
     }
     nvme_dma_mem_read(addr, (uint8_t *)&sqe, sizeof(sqe));
 

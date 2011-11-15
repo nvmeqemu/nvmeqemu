@@ -1,7 +1,10 @@
 /*
  * Copyright (c) 2011 Intel Corporation
  *
- * by Patrick Porlan <patrick.porlan@intel.com>
+ * by
+ *    Maciej Patelczyk <mpatelcz@gkslx007.igk.intel.com>
+ *    Krzysztof Wierzbicki <krzysztof.wierzbicki@intel.com>
+ *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
  *
  * This library is free software; you can redistribute it and/or

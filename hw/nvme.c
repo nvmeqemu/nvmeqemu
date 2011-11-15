@@ -1,7 +1,10 @@
 /*
  * Copyright (c) 2011 Intel Corporation
  *
- * by Patrick Porlan <patrick.porlan@intel.com>
+ * by
+ *    Maciej Patelczyk <mpatelcz@gkslx007.igk.intel.com>
+ *    Krzysztof Wierzbicki <krzysztof.wierzbicki@intel.com>
+ *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -100,7 +103,10 @@ static void sq_processing_timer_cb(void *param)
     int entries_to_process = ENTRIES_TO_PROCESS;
 
     /* Check SQs for work */
-
+    /* TODO: Remove the sequential looping for Queue Commands
+     * coz if one Q blocks for wahtever reason (CQ full)..remaining
+     * Queues having valid data won't be processed
+     */
     for (sq_id = 0; sq_id < NVME_MAX_QID; sq_id++) {
         while (n->sq[sq_id].head != n->sq[sq_id].tail) {
             /* Handle one SQ entry */

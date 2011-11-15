@@ -1,7 +1,10 @@
 /*
  * Copyright (c) 2011 Intel Corporation
  *
- * by Patrick Porlan <patrick.porlan@intel.com>
+ * by
+ *    Maciej Patelczyk <mpatelcz@gkslx007.igk.intel.com>
+ *    Krzysztof Wierzbicki <krzysztof.wierzbicki@intel.com>
+ *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -85,9 +88,12 @@ static uint64_t find_discontig_queue_entry(uint32_t pg_size, uint16_t queue_ptr,
 
     /* Correct offset within the prp list page */
     dma_addr = st_dma_addr + (prp_entry * PRP_ENTRY_SIZE);
+    /* Reading the PRP List at required offset */
+    nvme_dma_mem_read(dma_addr, (uint8_t *)&entry_addr, PRP_ENTRY_SIZE);
+
     /* Correct offset within the page */
-    entry_addr = dma_addr + (pg_entry * cmd_size);
-    return entry_addr;
+    dma_addr = entry_addr + (pg_entry * cmd_size);
+    return dma_addr;
 }
 
 void process_sq(NVMEState *n, uint16_t sq_id)
@@ -97,7 +103,6 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     NVMECmd sqe;
     NVMECQE cqe;
     NVMEStatusField *sf = (NVMEStatusField *) &cqe.status;
-    NVMECmdWrite *temp;
     cq_id = n->sq[sq_id].cq_id;
     if (is_cq_full(n, cq_id)) {
         return;
@@ -115,14 +120,6 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     }
     nvme_dma_mem_read(addr, (uint8_t *)&sqe, sizeof(sqe));
 
-    temp = (NVMECmdWrite *) &sqe;
-
-    LOG_DBG("SQ Command Opcode: %u", temp->opcode);
-    LOG_DBG("SQ Command NLB: %u", temp->nlb);
-    LOG_DBG("SQ Command prp1: %lx", temp->prp1);
-    LOG_DBG("SQ Command prp2: %lx", temp->prp2);
-
-
     if (n->abort) {
         if (abort_command(n, sq_id, &sqe)) {
             incr_sq_head(&n->sq[sq_id]);
@@ -130,12 +127,16 @@ void process_sq(NVMEState *n, uint16_t sq_id)
         }
     }
 
+    incr_sq_head(&n->sq[sq_id]);
+
     if (sq_id == ASQ_ID) {
         nvme_admin_command(n, &sqe, &cqe);
     } else {
        /* TODO add support for IO commands with different sizes of Q elements */
         nvme_io_command(n, &sqe, &cqe);
     }
+
+    /* Filling up the CQ entry */
     cqe.sq_id = sq_id;
     cqe.sq_head = n->sq[sq_id].head;
     cqe.command_id = sqe.cid;
@@ -154,7 +155,6 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     }
     nvme_dma_mem_write(addr, (uint8_t *)&cqe, sizeof(cqe));
 
-    incr_sq_head(&n->sq[sq_id]);
     incr_cq_tail(&n->cq[cq_id]);
 
     if (cq_id == ACQ_ID) {

@@ -1,7 +1,10 @@
 /*
  * Copyright (c) 2011 Intel Corporation
  *
- * by Patrick Porlan <patrick.porlan@intel.com>
+ * by
+ *    Maciej Patelczyk <mpatelcz@gkslx007.igk.intel.com>
+ *    Krzysztof Wierzbicki <krzysztof.wierzbicki@intel.com>
+ *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -15,9 +18,6 @@
  *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>
- *
- * This file deals with functions used for reading config files for both NVME
- * and PCI space
  */
 
 

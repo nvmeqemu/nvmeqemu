@@ -20,14 +20,11 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>
  */
 
-
 #include "nvme.h"
 #include "nvme_debug.h"
 #include <sys/mman.h>
 
 #define NVME_STORAGE_FILE_NAME "nvme_store.img"
-
-
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len)
 {
@@ -39,106 +36,85 @@ void nvme_dma_mem_write(target_phys_addr_t addr, uint8_t *buf, int len)
     cpu_physical_memory_rw(addr, buf, len, 1);
 }
 
-static uint8_t do_rw_prp(NVMEState *n, uint64_t mem_addr, uint64_t data_size,
-             uint64_t file_offset, uint8_t rw)
+static uint8_t do_rw_prp(NVMEState *n, uint64_t mem_addr, uint64_t *data_size_p,
+             uint64_t *file_offset_p, uint8_t rw)
 {
     uint8_t *mapping_addr = n->mapping_addr;
-    uint64_t m_offset = 0;
-    uint64_t f_offset = file_offset;
-    uint64_t total = data_size;
-    uint64_t len = 0;
+    uint64_t data_len = 0;
 
-    while (total != 0) {
-        if (total >= NVME_BUF_SIZE) {
-            len = NVME_BUF_SIZE;
-        } else {
-            len = total;
-        }
-        switch (rw) {
-        case NVME_CMD_READ:
-            LOG_DBG("Read cmd called");
-            nvme_dma_mem_write(mem_addr + m_offset,
-                mapping_addr + f_offset, len);
-            break;
-        case NVME_CMD_WRITE:
-            LOG_DBG("Write cmd called");
-            nvme_dma_mem_read(mem_addr + m_offset,
-                mapping_addr + f_offset, len);
-            break;
-        default:
-            LOG_ERR("Error- wrong opcode: %d\n", rw);
-            break;
-        }
+    if (*data_size_p == 0)
+    {
+        return FAIL;
+    }
 
-        m_offset = m_offset + len;
-        f_offset = f_offset + len;
-        total = total - len;
-    };
+    data_len = PAGE_SIZE - (mem_addr % PAGE_SIZE);
+    if (data_len > *data_size_p) {
+        data_len = *data_size_p;
+    }
 
-    return NVME_SC_SUCCESS;
+    LOG_DBG("File offset for read/write:%ld", *file_offset_p);
+    LOG_DBG("Length for read/write:%ld", data_len);
+    LOG_DBG("Address for read/write:%ld", mem_addr);
+    switch (rw) {
+    case NVME_CMD_READ:
+        LOG_DBG("Read cmd called");
+        nvme_dma_mem_write(mem_addr, (mapping_addr + *file_offset_p), data_len);
+        break;
+    case NVME_CMD_WRITE:
+        LOG_DBG("Write cmd called");
+        nvme_dma_mem_read(mem_addr, (mapping_addr + *file_offset_p), data_len);
+        break;
+    default:
+        LOG_ERR("Error- wrong opcode: %d\n", rw);
+        return FAIL;
+   }
+   *file_offset_p = *file_offset_p + data_len;
+   *data_size_p = *data_size_p - data_len;
+   return NVME_SC_SUCCESS;
 }
 
-static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command)
+static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,  uint64_t *data_size_p, uint64_t *file_offset_p)
 {
-    uint64_t total = 0;
-    uint64_t len = 0;
-    uint64_t offset = 0;
-    uint64_t prp_list[512];
+    uint64_t prp_list[512], prp_entries;
     uint16_t i = 0;
-
     uint8_t res = FAIL;
     struct NVME_rw *cmd = (struct NVME_rw *)command;
 
-    /*check if prp2 contains pointer to list or pointer to memory*/
-    /*assume page size 4096 */
-    /*TODO find from which NVME register PAGE_SIZE size should be read*/
+    LOG_DBG("Data Size remaining for read/write:%ld", *data_size_p);
 
-    total = (cmd->nlb + 1) * NVME_BLOCK_SIZE;
-
-    len = PAGE_SIZE;
-
-    offset = cmd->slba * NVME_BLOCK_SIZE;
-
-    res = do_rw_prp(n, cmd->prp1, len, offset, cmd->opcode);
-    if (res == FAIL) {
-        return FAIL;
-    }
-    total = total - PAGE_SIZE;
-    offset = offset + PAGE_SIZE;
-
-    /* LOG_NORM("sizeof(prp_list) %d\n", sizeof(prp_list)); */
-    memset(prp_list, 0, sizeof(prp_list));
-    nvme_dma_mem_read(cmd->prp2, (uint8_t *)prp_list, sizeof(prp_list));
+    /* Logic to find the number of PRP Entries */
+    prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) / PAGE_SIZE);
+    nvme_dma_mem_read(cmd->prp2, (uint8_t *)prp_list,
+        prp_entries * sizeof(uint64_t));
 
     i = 0;
-    while (total != 0) {
+    /* Read/Write on PRPList */
+    while (*data_size_p != 0) {
         if (i == 511) {
+            /* Calculate the actual number of remaining entries */
+            prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) /
+                PAGE_SIZE);
             nvme_dma_mem_read(prp_list[511], (uint8_t *)prp_list,
-                sizeof(prp_list));
+                prp_entries * sizeof(uint64_t));
             i = 0;
         }
 
-        if (total >= PAGE_SIZE) {
-            len = PAGE_SIZE;
-        } else {
-            len = total;
-        }
-        res = do_rw_prp(n, prp_list[i], len, offset, cmd->opcode);
+        res = do_rw_prp(n, prp_list[i], data_size_p, file_offset_p, cmd->opcode);
+        LOG_DBG("Data Size remaining for read/write:%ld", *data_size_p);
         if (res == FAIL) {
             break;
         }
-        total = total - len;
-        offset = offset + len;
         i++;
     }
-
     return res;
 }
 
+/* TODO: Make the PAGE_SIZE and NVME_BLOCK_SIZE generic */
 uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 {
     struct NVME_rw *e = (struct NVME_rw *)sqe;
     uint8_t res = FAIL;
+    uint64_t data_size, file_offset;
 
     LOG_NORM("%s(): called", __func__);
 
@@ -149,31 +125,32 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
     if ((sqe->opcode != NVME_CMD_READ) &&
         (sqe->opcode != NVME_CMD_WRITE)) {
         LOG_NORM("Wrong IO opcode:\t\t0x%02x\n", sqe->opcode);
-        return res;
+        goto ret;
     }
 
-    if (!e->prp2) {
-        res = do_rw_prp(n, e->prp1,
-            ((e->nlb + 1) * NVME_BLOCK_SIZE),
-            (e->slba * NVME_BLOCK_SIZE), e->opcode);
-    } else if ((e->nlb + 1) <= 2 * (PAGE_SIZE/NVME_BLOCK_SIZE)) {
-        res = do_rw_prp(n, e->prp1, PAGE_SIZE,
-            e->slba * NVME_BLOCK_SIZE, e->opcode);
+    data_size = (e->nlb + 1) * NVME_BLOCK_SIZE;
+    file_offset = e->slba * NVME_BLOCK_SIZE;
 
-        if (res == FAIL) {
-            return FAIL;
-        }
+    /* Writing/Reading PRP1 */
+    res = do_rw_prp(n, e->prp1,
+        &data_size, &file_offset, e->opcode);
+    if ((res == FAIL) || (data_size == 0)) {
+        goto ret;
+    }
+
+    if (data_size <= PAGE_SIZE) {
+        LOG_DBG("Data Size remaining for read/write:%ld", data_size);
         res = do_rw_prp(n, e->prp2,
-            (e->nlb + 1) * NVME_BLOCK_SIZE - PAGE_SIZE,
-            e->slba * NVME_BLOCK_SIZE + PAGE_SIZE,
-            e->opcode);
-
+            &data_size, &file_offset, e->opcode);
+        LOG_DBG("Data Size remaining for read/write:%ld", data_size);
         if (res == FAIL) {
-            return FAIL;
+            goto ret;
         }
     } else {
-        res = do_rw_prp_list(n, sqe);
+        res = do_rw_prp_list(n, sqe, &data_size, &file_offset);
     }
+
+ret:
     return res;
 }
 

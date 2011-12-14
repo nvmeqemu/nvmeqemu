@@ -739,6 +739,73 @@ static void read_file(NVMEState *n, uint8_t space)
     }
 }
 
+
+/*********************************************************************
+    Function     :    read_identify_cns
+    Description  :    Reading in hardcoded values of Identify controller
+                      and namespace structure
+    Return Type  :    void
+    Arguments    :    NVMEState * : Pointer to the NVMEState device
+                      TODO:Readin the values from a file instead of
+                      hardcoded values if required
+*********************************************************************/
+static void read_identify_cns(NVMEState *n)
+{
+   struct power_state_description *power;
+   LOG_NORM("%s(): called\n", __func__);
+
+    n->idtfy_ns = qemu_mallocz(sizeof(*(n->idtfy_ns)));
+    n->idtfy_ctrl = qemu_mallocz(sizeof(*(n->idtfy_ctrl)));
+    if ((!n->idtfy_ns) || (!n->idtfy_ctrl)) {
+        LOG_ERR("Identify Space not allocated!");
+        return;
+    }
+
+    n->idtfy_ns->nsze = NVME_TOTAL_BLOCKS;
+    n->idtfy_ns->ncap = NVME_TOTAL_BLOCKS;
+    n->idtfy_ns->nuse = NVME_TOTAL_BLOCKS;
+
+    /* The value is reported in terms of a power of two (2^n).
+     * LBA data size=2^9=512
+     */
+    n->idtfy_ns->lbaf0.lbads = 9;
+    n->idtfy_ns->flbas = 0;    /* [26] Formatted LBA Size */
+    LOG_NORM("kw q: ns->ncap: %lu\n", n->idtfy_ns->ncap);
+
+    pstrcpy((char *)n->idtfy_ctrl->mn, sizeof(n->idtfy_ctrl->mn),
+        "Qemu NVMe Driver 0xabcd");
+    pstrcpy((char *)n->idtfy_ctrl->sn, sizeof(n->idtfy_ctrl->sn), "NVMeQx1000");
+    pstrcpy((char *)n->idtfy_ctrl->fr, sizeof(n->idtfy_ctrl->fr), "012345");
+
+    /* TODO: fix this hardcoded values !!!
+    check identify command for details: spec chapter 5.11 bytes 512 and 513
+    On each 4 bits in byte is a value of n,
+    size calculation:  size=2^n,
+    */
+
+    n->idtfy_ctrl->cqes = 4 << 4 | 4;
+    n->idtfy_ctrl->sqes = 6 << 4 | 6;
+
+    n->idtfy_ctrl->vid = 0x8086;
+    n->idtfy_ctrl->ssvid = 0x0111;
+    /* number of supported name spaces bytes [516:519] */
+    n->idtfy_ctrl->nn = 1;
+    n->idtfy_ctrl->acl = NVME_ABORT_COMMAND_LIMIT;
+    n->idtfy_ctrl->aerl = 4;
+    n->idtfy_ctrl->frmw = 1 << 1 | 0;
+    n->idtfy_ctrl->npss = 2; /* 0 based */
+    n->idtfy_ctrl->awun = 0xff;
+
+    power = (struct power_state_description *)&(n->idtfy_ctrl->psd0);
+    power->mp = 1;
+
+    power = (struct power_state_description *)&(n->idtfy_ctrl->psdx[0]);
+    power->mp = 2;
+
+    power = (struct power_state_description *)&(n->idtfy_ctrl->psdx[32]);
+    power->mp = 3;
+}
+
 /*********************************************************************
     Function     :    pci_nvme_init
     Description  :    NVME initialization
@@ -821,6 +888,8 @@ static int pci_nvme_init(PCIDevice *pci_dev)
         memset(&(n->sq[ret]), 0, sizeof(NVMEIOSQueue));
         memset(&(n->cq[ret]), 0, sizeof(NVMEIOCQueue));
     }
+    /* Update the Identify Space of the controller */
+    read_identify_cns(n);
 
     /* Reading CC.MPS field */
     memcpy(&mps, &n->cntrl_reg[NVME_CC], WORD);
@@ -834,7 +903,6 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     n->mapping_addr = NULL;
     n->sq_processing_timer = qemu_new_timer_ns(vm_clock,
         sq_processing_timer_cb, n);
-
 
     return 0;
 }
@@ -855,6 +923,8 @@ static int pci_nvme_uninit(PCIDevice *pci_dev)
     qemu_free(n->rwc_mask);
     qemu_free(n->rws_mask);
     qemu_free(n->used_mask);
+    qemu_free(n->idtfy_ctrl);
+    qemu_free(n->idtfy_ns);
 
     if (n->sq_processing_timer) {
         if (n->sq_processing_timer_target) {

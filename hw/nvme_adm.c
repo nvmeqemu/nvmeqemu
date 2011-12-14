@@ -453,97 +453,37 @@ static uint32_t adm_cmd_get_log_page(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
 static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
 {
-    NVMEIdentifyController *ctrl;
-    struct power_state_description *power;
+
     uint32_t len;
-
-    LOG_NORM("%s(): called\n", __func__);
-
-    ctrl = qemu_mallocz(sizeof(*ctrl));
-
-    if (!ctrl) {
-        return FAIL;
-    }
-    pstrcpy((char *)ctrl->mn, sizeof(ctrl->mn), "Qemu NVMe Driver 0xabcd");
-    pstrcpy((char *)ctrl->sn, sizeof(ctrl->sn), "NVMeQx1000");
-    pstrcpy((char *)ctrl->fr, sizeof(ctrl->fr), "012345");
-
-    /* TODO: fix this hardcoded values !!!
-    check identify command for details: spec chapter 5.11 bytes 512 and 513
-    On each 4 bits in byte is a value of n,
-    size calculation:  size=2^n,
-    */
-
-    ctrl->cqes = 4 << 4 | 4;
-    ctrl->sqes = 6 << 4 | 6;
-
-    ctrl->vid = 0x8086;
-    ctrl->ssvid = 0x0111;
-    ctrl->nn = 1;   /* number of supported name spaces bytes [516:519] */
-    ctrl->acl = NVME_ABORT_COMMAND_LIMIT;
-    ctrl->aerl = 4;
-    ctrl->frmw = 1 << 1 | 0;
-    ctrl->npss = 2; /* 0 based */
-    ctrl->awun = 0xff;
-
-    power = (struct power_state_description *)&(ctrl->psd0);
-    power->mp = 1;
-
-    power = (struct power_state_description *)&(ctrl->psdx[0]);
-    power->mp = 2;
-
-    power = (struct power_state_description *)&(ctrl->psdx[32]);
-    power->mp = 3;
-
     LOG_NORM("%s(): copying %lu data into addr %lu\n",
-        __func__, sizeof(*ctrl), cmd->prp1);
+        __func__, sizeof(*n->idtfy_ctrl), cmd->prp1);
 
     len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
-    nvme_dma_mem_write(cmd->prp1, (uint8_t *) ctrl, len);
-    if (len != sizeof(*ctrl)) {
-        nvme_dma_mem_write(cmd->prp2, (uint8_t *) ((uint8_t *) ctrl + len),
-            (sizeof(*ctrl) - len));
+    nvme_dma_mem_write(cmd->prp1, (uint8_t *) n->idtfy_ctrl, len);
+    if (len != sizeof(*(n->idtfy_ctrl))) {
+        nvme_dma_mem_write(cmd->prp2,
+            (uint8_t *) ((uint8_t *) n->idtfy_ctrl + len),
+                (sizeof(*(n->idtfy_ctrl)) - len));
     }
-
-    qemu_free(ctrl);
     return 0;
 }
 
 /* Needs to be checked if this namespace exists. */
 static uint32_t adm_cmd_id_ns(NVMEState *n, NVMECmd *cmd)
 {
-    NVMEIdentifyNamespace *ns;
     uint32_t len;
     LOG_NORM("%s(): called\n", __func__);
 
-    ns = qemu_mallocz(sizeof(*ns));
-    if (!ns) {
-        return FAIL;
-    }
     LOG_NORM("%s(): copying %lu data into addr %lu\n",
-        __func__, sizeof(*ns), cmd->prp1);
-
-
-
-    ns->nsze = NVME_TOTAL_BLOCKS;
-    ns->ncap = NVME_TOTAL_BLOCKS;
-    ns->nuse = NVME_TOTAL_BLOCKS;
-
-    /* The value is reported in terms of a power of two (2^n).
-     * LBA data size=2^9=512
-     */
-    ns->lbaf0.lbads = 9;
-
-    ns->flbas = 0;    /* [26] Formatted LBA Size */
-    LOG_NORM("kw q: ns->ncap: %lu\n", ns->ncap);
+        __func__, sizeof(*(n->idtfy_ns)), cmd->prp1);
 
     len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
-    nvme_dma_mem_write(cmd->prp1, (uint8_t *) ns, len);
-    if (len != sizeof(*ns)) {
-        nvme_dma_mem_write(cmd->prp2, (uint8_t *) ((uint8_t *) ns + len),
-            (sizeof(*ns) - len));
+    nvme_dma_mem_write(cmd->prp1, (uint8_t *) n->idtfy_ns, len);
+    if (len != sizeof(*(n->idtfy_ns))) {
+        nvme_dma_mem_write(cmd->prp2,
+            (uint8_t *) ((uint8_t *) n->idtfy_ns + len),
+                (sizeof(*(n->idtfy_ns)) - len));
     }
-    qemu_free(ns);
     return 0;
 }
 
@@ -565,6 +505,13 @@ static uint32_t adm_cmd_identify(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     if (c->prp1 == 0) {
         LOG_ERR("%s(): prp1 absent\n", __func__);
         sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    /* Check for name space */
+    if (c->nsid == 0 || (c->nsid > n->idtfy_ctrl->nn)) {
+        LOG_ERR("%s(): Invalid Namespace ID\n", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }
 

@@ -267,6 +267,102 @@ typedef struct NVMEAdmCmdFeaturs {
     uint32_t cdw15;
 } NVMEAdmCmdFeatures;
 
+/* Identify - Controller.
+ * Number in comments are in bytes.
+ * Check spec NVM Express 1.0b Chapter 5.11 Identify command
+ */
+
+typedef struct NVMEIdentifyController {
+    uint16_t vid;
+    uint16_t ssvid;
+    uint8_t sn[20];
+    uint8_t mn[40];
+    uint8_t fr[8];
+    uint8_t rab;
+    uint8_t ieee[3];
+    uint8_t mic;
+    uint8_t mdts;
+    uint8_t rsvd255[178];
+    uint16_t oacs;
+    uint8_t acl;
+    uint8_t aerl;
+    uint8_t frmw;
+    uint8_t lpa;
+    uint8_t elpe;
+    uint8_t npss;
+    uint8_t rsvd511[248];
+    uint8_t sqes;
+    uint8_t cqes;
+    uint16_t rsvd515;
+    uint32_t nn;
+    uint16_t oncs;
+    uint16_t fuses;
+    uint8_t fna;
+    uint8_t vwc;
+    uint16_t awun;
+    uint16_t awupf;
+    uint8_t rsvd703[174];
+    uint8_t rsvd2047[1344];
+    uint8_t psd0[32];
+    uint8_t psdx[992];
+    uint8_t vs[1024];
+} NVMEIdentifyController;
+
+struct power_state_description {
+    uint16_t mp;
+    uint16_t reserved;
+    uint32_t enlat;
+    uint32_t exlat;
+    uint8_t    rrt;
+    uint8_t    rrl;
+    uint8_t rwt;
+    uint8_t rwl;
+};
+
+/* In bits */
+typedef struct NVMEIdentifyPowerDesc {
+    uint16_t mp; /* [0-15] Maximum Power */
+    uint16_t res0; /* [16-31] Reserved */
+    uint32_t enlat; /* [32-61] Entry Latency */
+    uint32_t exlat; /* [62-95] Exit Latency */
+    uint8_t rrt:5; /* [96-100] Relative Read Throughput */
+    uint8_t res1:3; /* [101-103] Reserved */
+    uint8_t rrl:5; /* [104-108] Relative Read Latency */
+    uint8_t res2:3; /* [109-111] Reserved */
+    uint8_t rwt:5; /* [112-116] Relative Write Throughput */
+    uint8_t res3:3; /* [117-119] Reserved */
+    uint8_t rwl:5; /* [120-124] Relative Write Latency */
+    uint8_t res4:3; /* [125-127] Reserved */
+    uint8_t res5[128];  /* [128-255] Reserved */
+} NVMEIdentifyPowerDesc;
+
+
+/* Figure 68: Identify – LBA Format Data Structure,
+ * NVM Command Set Specific */
+struct NVMELBAFormat {        /* Dword - 32 bits */
+    uint16_t ms;        /* [0-15] Metadata Size */
+    uint8_t lbads;        /* [16-23] LBA Data Size in a power of 2 (2^n)*/
+    uint8_t rp;        /* [24-25] Relative Performance */
+                /* [26-31] Bits Reserved */
+};
+
+/* Identify - Namespace. Numbers means bytes in comments. */
+typedef struct NVMEIdentifyNamespace {
+    uint64_t nsze;    /* [0-7] Namespace Size */
+    uint64_t ncap;    /* [8-15] Namespace Capacity */
+    uint64_t nuse;    /* [16-23] Namespace Utilization */
+    uint8_t nsfeat;    /* [24] Namespace Features */
+    uint8_t nlbaf;    /* [25] Number of LBA Formats */
+    uint8_t flbas;    /* [26] Formatted LBA Size */
+    uint8_t mc;    /* [27] Metadata Capabilities */
+    uint8_t dpc;    /* [28] End2end Data Protection Capabilities */
+    uint8_t dps;    /* [29] End2end Data Protection Type Settings */
+    uint8_t res0[98];    /* [30-127] Reserved */
+    struct NVMELBAFormat lbaf0;    /* [128-131] LBA Format 0 Support. */
+    uint8_t lbafx[60];    /* [132-191] LBA Format 1-15 Support */
+    uint8_t res1[192];    /* [192-383] Reserved */
+    uint8_t vs[3712];    /* [384-4095] Vendor Specific */
+} NVMEIdentifyNamespace;
 
 typedef struct NVMEState {
     PCIDevice dev;
@@ -318,6 +414,11 @@ typedef struct NVMEState {
     uint32_t intr_vect;
     /* Page Size used by the hardware */
     uint32_t page_size;
+    /* Pointer to Identify Controller Strucutre */
+    NVMEIdentifyController *idtfy_ctrl;
+    /* Pointer to Identify Namespace Strucutre */
+    NVMEIdentifyNamespace *idtfy_ns;
+
 } NVMEState;
 
 /* Structure used for default initialization sequence (except doorbell) */
@@ -789,103 +890,6 @@ enum {
     NVME_IDENTIFY_NAMESPACE  = 0,
     NVME_IDENTIFY_CONTROLLER = 1,
 };
-
-/* Identify - Controller.
- * Number in comments are in bytes.
- * Check spec NVM Express 1.0b Chapter 5.11 Identify command
- */
-
-typedef struct NVMEIdentifyController {
-    uint16_t vid;
-    uint16_t ssvid;
-    uint8_t sn[20];
-    uint8_t mn[40];
-    uint8_t fr[8];
-    uint8_t rab;
-    uint8_t ieee[3];
-    uint8_t mic;
-    uint8_t mdts;
-    uint8_t rsvd255[178];
-    uint16_t oacs;
-    uint8_t acl;
-    uint8_t aerl;
-    uint8_t frmw;
-    uint8_t lpa;
-    uint8_t elpe;
-    uint8_t npss;
-    uint8_t rsvd511[248];
-    uint8_t sqes;
-    uint8_t cqes;
-    uint16_t rsvd515;
-    uint32_t nn;
-    uint16_t oncs;
-    uint16_t fuses;
-    uint8_t fna;
-    uint8_t vwc;
-    uint16_t awun;
-    uint16_t awupf;
-    uint8_t rsvd703[174];
-    uint8_t rsvd2047[1344];
-    uint8_t psd0[32];
-    uint8_t psdx[992];
-    uint8_t vs[1024];
-} NVMEIdentifyController;
-
-struct power_state_description {
-    uint16_t mp;
-    uint16_t reserved;
-    uint32_t enlat;
-    uint32_t exlat;
-    uint8_t    rrt;
-    uint8_t    rrl;
-    uint8_t rwt;
-    uint8_t rwl;
-};
-
-/* In bits */
-typedef struct NVMEIdentifyPowerDesc {
-    uint16_t mp; /* [0-15] Maximum Power */
-    uint16_t res0; /* [16-31] Reserved */
-    uint32_t enlat; /* [32-61] Entry Latency */
-    uint32_t exlat; /* [62-95] Exit Latency */
-    uint8_t rrt:5; /* [96-100] Relative Read Throughput */
-    uint8_t res1:3; /* [101-103] Reserved */
-    uint8_t rrl:5; /* [104-108] Relative Read Latency */
-    uint8_t res2:3; /* [109-111] Reserved */
-    uint8_t rwt:5; /* [112-116] Relative Write Throughput */
-    uint8_t res3:3; /* [117-119] Reserved */
-    uint8_t rwl:5; /* [120-124] Relative Write Latency */
-    uint8_t res4:3; /* [125-127] Reserved */
-    uint8_t res5[128];  /* [128-255] Reserved */
-} NVMEIdentifyPowerDesc;
-
-
-/* Figure 68: Identify – LBA Format Data Structure,
- * NVM Command Set Specific */
-struct NVMELBAFormat {        /* Dword - 32 bits */
-    uint16_t ms;        /* [0-15] Metadata Size */
-    uint8_t lbads;        /* [16-23] LBA Data Size in a power of 2 (2^n)*/
-    uint8_t rp;        /* [24-25] Relative Performance */
-                /* [26-31] Bits Reserved */
-};
-
-/* Identify - Namespace. Numbers means bytes in comments. */
-typedef struct NVMEIdentifyNamespace {
-    uint64_t nsze;    /* [0-7] Namespace Size */
-    uint64_t ncap;    /* [8-15] Namespace Capacity */
-    uint64_t nuse;    /* [16-23] Namespace Utilization */
-    uint8_t nsfeat;    /* [24] Namespace Features */
-    uint8_t nlbaf;    /* [25] Number of LBA Formats */
-    uint8_t flbas;    /* [26] Formatted LBA Size */
-    uint8_t mc;    /* [27] Metadata Capabilities */
-    uint8_t dpc;    /* [28] End2end Data Protection Capabilities */
-    uint8_t dps;    /* [29] End2end Data Protection Type Settings */
-    uint8_t res0[98];    /* [30-127] Reserved */
-    struct NVMELBAFormat lbaf0;    /* [128-131] LBA Format 0 Support. */
-    uint8_t lbafx[60];    /* [132-191] LBA Format 1-15 Support */
-    uint8_t res1[192];    /* [192-383] Reserved */
-    uint8_t vs[3712];    /* [384-4095] Vendor Specific */
-} NVMEIdentifyNamespace;
 
 /* Config File Read Strucutre */
 typedef struct FILERead {

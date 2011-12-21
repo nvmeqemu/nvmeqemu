@@ -508,17 +508,21 @@ static uint32_t adm_cmd_identify(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return FAIL;
     }
 
-    /* Check for name space */
-    if (c->nsid == 0 || (c->nsid > n->idtfy_ctrl->nn)) {
-        LOG_ERR("%s(): Invalid Namespace ID\n", __func__);
-        sf->sc = NVME_SC_INVALID_NAMESPACE;
-        return FAIL;
-    }
-
     /* Construct some data and copy it to the addr.*/
     if (c->cns == NVME_IDENTIFY_CONTROLLER) {
+        if (c->nsid != 0) {
+            LOG_ERR("%s(): Invalid Namespace ID\n", __func__);
+            sf->sc = NVME_SC_INVALID_NAMESPACE;
+            return FAIL;
+        }
         ret = adm_cmd_id_ctrl(n, cmd);
     } else {
+        /* Check for name space */
+        if (c->nsid == 0 || (c->nsid > n->idtfy_ctrl->nn)) {
+            LOG_ERR("%s(): Invalid Namespace ID\n", __func__);
+            sf->sc = NVME_SC_INVALID_NAMESPACE;
+            return FAIL;
+        }
         ret = adm_cmd_id_ns(n, cmd);
     }
     if (ret) {

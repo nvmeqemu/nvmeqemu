@@ -68,12 +68,12 @@ static uint64_t find_discontig_queue_entry(uint32_t pg_size, uint16_t queue_ptr,
     uint32_t pg_no, prp_pg_no, entr_per_pg, prps_per_pg, prp_entry, pg_entry;
     uint64_t dma_addr, entry_addr;
 
+    LOG_DBG("%s(): called", __func__);
     /* All PRP entries start with offset 00h */
     entr_per_pg = (uint32_t) (pg_size / cmd_size);
     /* pg_no and prp_pg_no start with 0 */
     pg_no = (uint32_t) (queue_ptr / entr_per_pg);
     pg_entry = (uint32_t) (queue_ptr % entr_per_pg);
-    LOG_DBG("Pg no: %d", pg_no);
 
     prps_per_pg = (uint32_t) (pg_size / PRP_ENTRY_SIZE);
     prp_pg_no = (uint32_t) (pg_no / (prps_per_pg - 1));
@@ -109,6 +109,7 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     }
     memset(&cqe, 0, sizeof(cqe));
 
+    LOG_DBG("%s(): called", __func__);
     /* Process SQE */
     if (sq_id == ASQ_ID || n->sq[sq_id].phys_contig) {
         addr = n->sq[sq_id].dma_addr + n->sq[sq_id].head * sizeof(sqe);

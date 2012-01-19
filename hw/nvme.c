@@ -828,6 +828,10 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     uint32_t ret;
     uint16_t mps;
 
+    /* Zero out the Queue Datastructures */
+    memset(n->cq, 0, sizeof(NVMEIOCQueue) * NVME_MAX_QID);
+    memset(n->sq, 0, sizeof(NVMEIOSQueue) * NVME_MAX_QID);
+
     /* TODO: pci_conf = n->dev.config; */
     n->nvectors = NVME_MSIX_NVECTORS;
     n->bar0_size = NVME_REG_SIZE;
@@ -889,12 +893,6 @@ static int pci_nvme_init(PCIDevice *pci_dev)
 
     for (ret = 0; ret < n->nvectors; ret++) {
         msix_vector_use(&n->dev, ret);
-    }
-
-
-    for (ret = 0; ret < NVME_MAX_QID; ret++) {
-        memset(&(n->sq[ret]), 0, sizeof(NVMEIOSQueue));
-        memset(&(n->cq[ret]), 0, sizeof(NVMEIOCQueue));
     }
 
     /* Update the Identify Space of the controller */

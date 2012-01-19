@@ -103,6 +103,13 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     NVMECmd sqe;
     NVMECQE cqe;
     NVMEStatusField *sf = (NVMEStatusField *) &cqe.status;
+
+    if (n->sq[sq_id].dma_addr == 0 || n->cq[n->sq[sq_id].cq_id].dma_addr
+        == 0) {
+        LOG_ERR("Required Submission/Completion Queue does not exist");
+        n->sq[sq_id].head = n->sq[sq_id].tail = 0;
+        goto exit;
+    }
     cq_id = n->sq[sq_id].cq_id;
     if (is_cq_full(n, cq_id)) {
         return;
@@ -110,6 +117,7 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     memset(&cqe, 0, sizeof(cqe));
 
     LOG_DBG("%s(): called", __func__);
+
     /* Process SQE */
     if (sq_id == ASQ_ID || n->sq[sq_id].phys_contig) {
         addr = n->sq[sq_id].dma_addr + n->sq[sq_id].head * sizeof(sqe);
@@ -117,7 +125,6 @@ void process_sq(NVMEState *n, uint16_t sq_id)
         /* PRP implementation */
         addr = find_discontig_queue_entry(n->page_size, n->sq[sq_id].head,
             sizeof(sqe), n->sq[sq_id].dma_addr);
-        LOG_DBG("Address Returned:%lx", addr);
     }
     nvme_dma_mem_read(addr, (uint8_t *)&sqe, sizeof(sqe));
 
@@ -173,5 +180,7 @@ void process_sq(NVMEState *n, uint16_t sq_id)
         LOG_NORM("kw q: IRQ not enabled for CQ: %d;\n", cq_id);
     }
 
+exit:
+    return;
 
 }

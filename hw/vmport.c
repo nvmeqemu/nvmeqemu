@@ -33,7 +33,7 @@
 #define VMPORT_CMD_GETRAMSIZE 0x14
 
 #define VMPORT_ENTRIES 0x2c
-#define VMPORT_MAGIC   0x564D5868
+#define VMPORT_MAGIC   0x564D5860
 
 typedef struct _VMPortState
 {

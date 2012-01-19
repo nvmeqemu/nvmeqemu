@@ -56,7 +56,7 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
     uint32_t queue_id;
     int64_t deadline;
 
-    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x\n",
+    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x",
         __func__, (unsigned)addr, val);
 
 
@@ -67,7 +67,7 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
         /* CQ */
         queue_id = (addr - NVME_CQ0HDBL) / QUEUE_BASE_ADDRESS_WIDTH;
         if (queue_id > NVME_MAX_QID) {
-            LOG_NORM("Wrong CQ ID: %d\n", queue_id);
+            LOG_NORM("Wrong CQ ID: %d", queue_id);
             return;
         }
 
@@ -76,7 +76,7 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
         /* SQ */
         queue_id = (addr - NVME_SQ0TDBL) / QUEUE_BASE_ADDRESS_WIDTH;
         if (queue_id > NVME_MAX_QID) {
-            LOG_NORM("Wrong SQ ID: %d\n", queue_id);
+            LOG_NORM("Wrong SQ ID: %d", queue_id);
             return;
         }
         nvme_dev->sq[queue_id].tail = val & 0xffff;
@@ -143,7 +143,7 @@ static void nvme_mmio_writeb(void *opaque, target_phys_addr_t addr,
 {
     NVMEState *n = opaque;
 
-    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x\n",
+    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x",
         __func__, (unsigned)addr, val);
     LOG_NORM("writeb is not supported!");
     (void)n;
@@ -162,7 +162,7 @@ static void nvme_mmio_writew(void *opaque, target_phys_addr_t addr,
 {
     NVMEState *n = opaque;
 
-    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x\n",
+    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x",
         __func__, (unsigned)addr, val);
     LOG_NORM("writew is not supported!");
     (void)n;
@@ -182,7 +182,7 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
     NVMEState *nvme_dev = (NVMEState *) opaque;
     uint32_t var; /* Variable to store reg values locally */
 
-    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x\n",
+    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x",
         __func__, (unsigned)addr, val);
     /* Check if NVME controller Capabilities was written */
     if (addr < NVME_SQ0TDBL) {
@@ -378,7 +378,7 @@ static uint32_t nvme_mmio_readb(void *opaque, target_phys_addr_t addr)
 {
     uint32_t rd_val;
     NVMEState *nvme_dev = (NVMEState *) opaque;
-    LOG_DBG("%s(): addr = 0x%08x\n", __func__, (unsigned)addr);
+    LOG_DBG("%s(): addr = 0x%08x", __func__, (unsigned)addr);
     /* Check if NVME controller Capabilities was written */
     if (addr < NVME_SQ0TDBL) {
         rd_val = nvme_cntrl_read_config(nvme_dev, addr, BYTE);
@@ -406,7 +406,7 @@ static uint32_t nvme_mmio_readw(void *opaque, target_phys_addr_t addr)
 {
     uint32_t rd_val;
     NVMEState *nvme_dev = (NVMEState *) opaque;
-    LOG_DBG("%s(): addr = 0x%08x\n", __func__, (unsigned)addr);
+    LOG_DBG("%s(): addr = 0x%08x", __func__, (unsigned)addr);
 
     /* Check if NVME controller Capabilities was written */
     if (addr < NVME_SQ0TDBL) {
@@ -433,7 +433,7 @@ static uint32_t nvme_mmio_readl(void *opaque, target_phys_addr_t addr)
     uint32_t rd_val = 0;
     NVMEState *nvme_dev = (NVMEState *) opaque;
 
-    LOG_DBG("%s(): addr = 0x%08x\n", __func__, (unsigned)addr);
+    LOG_DBG("%s(): addr = 0x%08x", __func__, (unsigned)addr);
 
     /* Check if NVME controller Capabilities was written */
     if (addr < NVME_SQ0TDBL) {
@@ -540,7 +540,7 @@ static void nvme_mmio_map(PCIDevice *pci_dev, int reg_num, pcibus_t addr,
     NVMEState *n = DO_UPCAST(NVMEState, dev, pci_dev);
 
     if (reg_num) {
-        LOG_NORM("Only bar0 is allowed! reg_num: %d\n", reg_num);
+        LOG_NORM("Only bar0 is allowed! reg_num: %d", reg_num);
     }
 
     /* Is this hacking? */
@@ -685,7 +685,7 @@ static void pci_space_init(PCIDevice *pci_dev)
 
     /*other notation:  pci_config[OFFSET] = 0xff; */
 
-    LOG_NORM("%s(): Setting PCI Interrupt PIN A\n", __func__);
+    LOG_NORM("%s(): Setting PCI Interrupt PIN A", __func__);
     pci_conf[PCI_INTERRUPT_PIN] = 1;
 
     n->nvectors = NVME_MSIX_NVECTORS;
@@ -752,7 +752,7 @@ static void read_file(NVMEState *n, uint8_t space)
 static void read_identify_cns(NVMEState *n)
 {
    struct power_state_description *power;
-   LOG_NORM("%s(): called\n", __func__);
+   LOG_NORM("%s(): called", __func__);
 
     n->idtfy_ns = qemu_mallocz(sizeof(*(n->idtfy_ns)));
     n->idtfy_ctrl = qemu_mallocz(sizeof(*(n->idtfy_ctrl)));
@@ -770,7 +770,7 @@ static void read_identify_cns(NVMEState *n)
      */
     n->idtfy_ns->lbaf0.lbads = 9;
     n->idtfy_ns->flbas = 0;    /* [26] Formatted LBA Size */
-    LOG_NORM("kw q: ns->ncap: %lu\n", n->idtfy_ns->ncap);
+    LOG_NORM("kw q: ns->ncap: %lu", n->idtfy_ns->ncap);
 
     pstrcpy((char *)n->idtfy_ctrl->mn, sizeof(n->idtfy_ctrl->mn),
         "Qemu NVMe Driver 0xabcd");
@@ -830,11 +830,11 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     ret = msix_init((struct PCIDevice *)&n->dev,
          n->nvectors, 0, n->bar0_size);
     if (ret) {
-        LOG_NORM("%s(): PCI MSI-X Failed\n", __func__);
+        LOG_NORM("%s(): PCI MSI-X Failed", __func__);
     } else {
-        LOG_NORM("%s(): PCI MSI-X Initialized\n", __func__);
+        LOG_NORM("%s(): PCI MSI-X Initialized", __func__);
     }
-    LOG_NORM("%s(): Reg0 size %u, nvectors: %hu\n", __func__,
+    LOG_NORM("%s(): Reg0 size %u, nvectors: %hu", __func__,
         n->bar0_size, n->nvectors);
 
     /* NVMe is Little Endian. */

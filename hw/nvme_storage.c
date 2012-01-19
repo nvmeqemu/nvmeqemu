@@ -65,7 +65,7 @@ static uint8_t do_rw_prp(NVMEState *n, uint64_t mem_addr, uint64_t *data_size_p,
         nvme_dma_mem_read(mem_addr, (mapping_addr + *file_offset_p), data_len);
         break;
     default:
-        LOG_ERR("Error- wrong opcode: %d\n", rw);
+        LOG_ERR("Error- wrong opcode: %d", rw);
         return FAIL;
    }
    *file_offset_p = *file_offset_p + data_len;
@@ -124,7 +124,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 
     if ((sqe->opcode != NVME_CMD_READ) &&
         (sqe->opcode != NVME_CMD_WRITE)) {
-        LOG_NORM("Wrong IO opcode:\t\t0x%02x\n", sqe->opcode);
+        LOG_NORM("Wrong IO opcode:\t\t0x%02x", sqe->opcode);
         goto ret;
     }
 
@@ -159,7 +159,7 @@ static int nvme_create_storage_file(NVMEState *n)
     n->fd = open(NVME_STORAGE_FILE_NAME, O_RDWR | O_CREAT
         | O_TRUNC, S_IRUSR | S_IWUSR);
     posix_fallocate(n->fd, 0, NVME_STORAGE_FILE_SIZE);
-    LOG_NORM("Backing store created with fd %d\n", n->fd);
+    LOG_NORM("Backing store created with fd %d", n->fd);
     close(n->fd);
     n->fd = -1;
     return 0;
@@ -208,6 +208,6 @@ int nvme_open_storage_file(NVMEState *n)
     n->mapping_size = NVME_STORAGE_FILE_SIZE;
     n->mapping_addr = mapping_addr;
 
-    LOG_NORM("Backing store mapped to %p\n", n->mapping_addr);
+    LOG_NORM("Backing store mapped to %p", n->mapping_addr);
     return 0;
 }

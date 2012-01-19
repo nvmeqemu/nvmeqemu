@@ -60,7 +60,7 @@ int read_config_file(FILE *config_file , NVMEState *n, uint8_t flag)
     /* Read the configuration file line by line */
 
     if (fgets(var_line, MAX_CHAR_PER_LINE, config_file) == NULL) {
-        LOG_NORM("Config File cannot be read\n");
+        LOG_NORM("Config File cannot be read");
         return 1;
     }
     do {
@@ -69,7 +69,7 @@ int read_config_file(FILE *config_file , NVMEState *n, uint8_t flag)
             do {
                 /* Reading line after line between <REG and </REG> */
                 if (fgets(var_line, MAX_CHAR_PER_LINE, config_file) == NULL) {
-                    LOG_NORM("Wrong Format between <REG> and </REG>\n");
+                    LOG_NORM("Wrong Format between <REG> and </REG>");
                     return 1;
                 }
                 update_var((char *)var_line, &data, &eor_flag, &sor_flag);
@@ -128,11 +128,11 @@ int read_config_file(FILE *config_file , NVMEState *n, uint8_t flag)
             if (((data.offset + offset + data.len) > pci_config_size(&n->dev))
                 && (flag == PCI_SPACE)) {
                 LOG_ERR("Invlaid Offsets present in the Config file for \
-                    PCI address space \n");
+                    PCI address space ");
             } else if (((data.offset + offset + data.len) > 0xFFF) && (flag ==
                 NVME_SPACE)) {
                 LOG_ERR("Invlaid Offsets present in the Config file for \
-                    NVME address space \n");
+                    NVME address space ");
             } else {
                 /* PCI / NVME space writes */
                 config_space_write(n, &data, flag, offset);

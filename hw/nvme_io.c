@@ -169,7 +169,7 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     if (n->cq[cq_id].irq_enabled) {
         msix_notify(&(n->dev), n->cq[cq_id].vector);
     } else {
-        LOG_NORM("kw q: IRQ not enabled for CQ: %d;\n", cq_id);
+        LOG_NORM("kw q: IRQ not enabled for CQ: %d", cq_id);
     }
 
 

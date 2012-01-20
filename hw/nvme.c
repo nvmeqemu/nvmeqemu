@@ -225,7 +225,7 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
                  */
                 if (nvme_dev->cq[ACQ_ID].dma_addr &&
                     nvme_dev->sq[ASQ_ID].dma_addr &&
-                    (!nvme_open_storage_file(nvme_dev))) {
+                    (!nvme_open_storage_disk(nvme_dev))) {
                     /* Update CSTS.RDY based on CC.EN and set the phase tag */
                     nvme_dev->cntrl_reg[NVME_CTST] |= CC_EN ;
                     nvme_dev->cq[ACQ_ID].phase_tag = 1;
@@ -604,7 +604,7 @@ static void clear_nvme_device(NVMEState *n)
     /* Inflight Operations will not be processed */
     qemu_del_timer(n->sq_processing_timer);
     n->sq_processing_timer_target = 0;
-    nvme_close_storage_file(n);
+    nvme_close_storage_disk(n);
 
     /* Saving the Admin Queue States before reset */
     n->aqstate.aqa = nvme_cntrl_read_config(n, NVME_AQA, DWORD);
@@ -751,27 +751,35 @@ static void read_file(NVMEState *n, uint8_t space)
 *********************************************************************/
 static void read_identify_cns(NVMEState *n)
 {
-   struct power_state_description *power;
-   LOG_NORM("%s(): called", __func__);
+    struct power_state_description *power;
+    int index, i;
 
-    n->idtfy_ns = qemu_mallocz(sizeof(*(n->idtfy_ns)));
+    LOG_NORM("%s(): called", __func__);
+    for (index = 0; index < NO_OF_NAMESPACES; index++) {
+        n->disk[index].idtfy_ns =
+            qemu_mallocz(sizeof(*(n->disk[index].idtfy_ns)));
+        if (!n->disk[index].idtfy_ns) {
+            LOG_ERR("Identify Space not allocated!");
+            return;
+        }
+        n->disk[index].idtfy_ns->nsze = NAMESPACE_SIZE;
+        n->disk[index].idtfy_ns->ncap = NAMESPACE_CAP;
+        n->disk[index].idtfy_ns->nuse = 0;
+        n->disk[index].idtfy_ns->nlbaf = NO_LBA_FORMATS;
+        n->disk[index].idtfy_ns->flbas = LBA_FORMAT_INUSE;
+        /* Filling in the LBA Format structure */
+        for (i = 0 ; i <= NO_LBA_FORMATS; i++) {
+            n->disk[index].idtfy_ns->lbafx[i].lbads = LBA_SIZE;
+        }
+        LOG_NORM("Capacity of namespace %d: %lu\n",
+            index+1, n->disk[index].idtfy_ns->ncap);
+    }
+
     n->idtfy_ctrl = qemu_mallocz(sizeof(*(n->idtfy_ctrl)));
-    if ((!n->idtfy_ns) || (!n->idtfy_ctrl)) {
+    if (!n->idtfy_ctrl) {
         LOG_ERR("Identify Space not allocated!");
         return;
     }
-
-    n->idtfy_ns->nsze = NVME_TOTAL_BLOCKS;
-    n->idtfy_ns->ncap = NVME_TOTAL_BLOCKS;
-    n->idtfy_ns->nuse = NVME_TOTAL_BLOCKS;
-
-    /* The value is reported in terms of a power of two (2^n).
-     * LBA data size=2^9=512
-     */
-    n->idtfy_ns->lbaf0.lbads = 9;
-    n->idtfy_ns->flbas = 0;    /* [26] Formatted LBA Size */
-    LOG_NORM("kw q: ns->ncap: %lu", n->idtfy_ns->ncap);
-
     pstrcpy((char *)n->idtfy_ctrl->mn, sizeof(n->idtfy_ctrl->mn),
         "Qemu NVMe Driver 0xabcd");
     pstrcpy((char *)n->idtfy_ctrl->sn, sizeof(n->idtfy_ctrl->sn), "NVMeQx1000");
@@ -789,11 +797,11 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->vid = 0x8086;
     n->idtfy_ctrl->ssvid = 0x0111;
     /* number of supported name spaces bytes [516:519] */
-    n->idtfy_ctrl->nn = 1;
+    n->idtfy_ctrl->nn = NO_OF_NAMESPACES;
     n->idtfy_ctrl->acl = NVME_ABORT_COMMAND_LIMIT;
-    n->idtfy_ctrl->aerl = 4;
+    n->idtfy_ctrl->aerl = ASYNC_EVENT_REQ_LIMIT;
     n->idtfy_ctrl->frmw = 1 << 1 | 0;
-    n->idtfy_ctrl->npss = 2; /* 0 based */
+    n->idtfy_ctrl->npss = NO_POWER_STATE_SUPPORT;
     n->idtfy_ctrl->awun = 0xff;
 
     power = (struct power_state_description *)&(n->idtfy_ctrl->psd0);
@@ -819,6 +827,10 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     NVMEState *n = DO_UPCAST(NVMEState, dev, pci_dev);
     uint32_t ret;
     uint16_t mps;
+
+    /* Zero out the Queue Datastructures */
+    memset(n->cq, 0, sizeof(NVMEIOCQueue) * NVME_MAX_QID);
+    memset(n->sq, 0, sizeof(NVMEIOSQueue) * NVME_MAX_QID);
 
     /* TODO: pci_conf = n->dev.config; */
     n->nvectors = NVME_MSIX_NVECTORS;
@@ -883,24 +895,20 @@ static int pci_nvme_init(PCIDevice *pci_dev)
         msix_vector_use(&n->dev, ret);
     }
 
-
-    for (ret = 0; ret < NVME_MAX_QID; ret++) {
-        memset(&(n->sq[ret]), 0, sizeof(NVMEIOSQueue));
-        memset(&(n->cq[ret]), 0, sizeof(NVMEIOCQueue));
-    }
     /* Update the Identify Space of the controller */
     read_identify_cns(n);
 
     /* Reading CC.MPS field */
     memcpy(&mps, &n->cntrl_reg[NVME_CC], WORD);
-    LOG_DBG("Mask: %x", MASK(4, 7));
     mps &= (uint16_t) MASK(4, 7);
     mps >>= 7;
-
     n->page_size = (1 << (12 + mps));
     LOG_DBG("Page Size: %d", n->page_size);
-    n->fd = -1;
-    n->mapping_addr = NULL;
+
+    /* Create the Storage Disk */
+    if (nvme_create_storage_disk(n, DISK_NO)) {
+        LOG_NORM("Errors while creating NVME disk");
+    }
     n->sq_processing_timer = qemu_new_timer_ns(vm_clock,
         sq_processing_timer_cb, n);
 
@@ -916,6 +924,7 @@ static int pci_nvme_init(PCIDevice *pci_dev)
 static int pci_nvme_uninit(PCIDevice *pci_dev)
 {
     NVMEState *n = DO_UPCAST(NVMEState, dev, pci_dev);
+    int index;
 
     /* Freeing space allocated for NVME regspace masks except the doorbells */
     qemu_free(n->cntrl_reg);
@@ -924,7 +933,10 @@ static int pci_nvme_uninit(PCIDevice *pci_dev)
     qemu_free(n->rws_mask);
     qemu_free(n->used_mask);
     qemu_free(n->idtfy_ctrl);
-    qemu_free(n->idtfy_ns);
+
+    for (index = 0; index < NO_OF_NAMESPACES; index++) {
+        qemu_free(n->disk[index].idtfy_ns);
+    }
 
     if (n->sq_processing_timer) {
         if (n->sq_processing_timer_target) {
@@ -935,8 +947,9 @@ static int pci_nvme_uninit(PCIDevice *pci_dev)
         n->sq_processing_timer = NULL;
     }
 
+    nvme_close_storage_disk(n);
+    nvme_del_storage_disk(n, DISK_NO);
     LOG_NORM("Freed NVME device memory");
-    nvme_close_storage_file(n);
     return 0;
 }
 

@@ -35,6 +35,10 @@
 #define DWORD 4
 #define QWORD 8
 
+/* SUCCESS and FAILURE return values */
+#define SUCCESS 0x0
+#define FAIL 0x1
+
 /* Macros to check which Interrupt is enabled */
 #define IS_MSIX(n) (n->dev.config[n->dev.msix_cap + 0x03] & 0x80)
 
@@ -63,14 +67,34 @@
 #define NVME_MSIX_NVECTORS 32
 
 /* Assume that block is 512 bytes */
+#define DISK_NO 1
+#define NVME_BUF_SIZE 4096
+#define NVME_BLOCK_SIZE(x) (1 << x)
+#define BLOCKS_PER_NAMESPACE 1048576
+#define NO_OF_NAMESPACES 4
 
-#define NVME_BUF_SIZE    4096
-#define NVME_BLOCK_SIZE        512
-#define NVME_STORAGE_FILE_SIZE    (1024 * 1024 * 1024)
-#define NVME_TOTAL_BLOCKS    (NVME_STORAGE_FILE_SIZE / NVME_BLOCK_SIZE)
-#define FAIL 0x1
-#define NVME_ABORT_COMMAND_LIMIT 10
+/* The value is reported in terms of a power of two (2^n).
+ * LBA data size=2^9=512
+ */
+#define LBA_SIZE 9
+
+#define NVME_STORAGE_SIZE \
+    (NO_OF_NAMESPACES * BLOCKS_PER_NAMESPACE * (1 << LBA_SIZE))
+
+#define NAMESPACE_SIZE BLOCKS_PER_NAMESPACE
+#define NAMESPACE_CAP  BLOCKS_PER_NAMESPACE
+
+
 #define NVME_EMPTY 0xffffffff
+
+/* Definitions regarding  Identify Namespace Datastructure */
+#define NO_POWER_STATE_SUPPORT 2 /* 0 BASED */
+#define NVME_ABORT_COMMAND_LIMIT 10 /* 0 BASED */
+#define ASYNC_EVENT_REQ_LIMIT 4 /* 0 BASED */
+
+/* Definitions regarding  Identify Controller Datastructure */
+#define NO_LBA_FORMATS 15 /* 0 BASED */
+#define LBA_FORMAT_INUSE 0 /* 0 BASED */
 
 /* NVMe Controller Registers */
 enum {
@@ -358,11 +382,20 @@ typedef struct NVMEIdentifyNamespace {
     uint8_t dpc;    /* [28] End2end Data Protection Capabilities */
     uint8_t dps;    /* [29] End2end Data Protection Type Settings */
     uint8_t res0[98];    /* [30-127] Reserved */
-    struct NVMELBAFormat lbaf0;    /* [128-131] LBA Format 0 Support. */
-    uint8_t lbafx[60];    /* [132-191] LBA Format 1-15 Support */
+    struct NVMELBAFormat lbafx[16]; /* [128-191] LBA Format 0-15 Support */
     uint8_t res1[192];    /* [192-383] Reserved */
     uint8_t vs[3712];    /* [384-4095] Vendor Specific */
 } NVMEIdentifyNamespace;
+
+typedef struct DiskInfo {
+    int fd;
+    size_t mapping_size;
+    uint8_t *mapping_addr;
+    /* Pointer to Identify Namespace Strucutre */
+    NVMEIdentifyNamespace *idtfy_ns;
+    /* Namespace utilization bitmasks (rounded off) */
+    uint8_t ns_util[(BLOCKS_PER_NAMESPACE + 0x07) / 0x08];
+} DiskInfo;
 
 typedef struct NVMEState {
     PCIDevice dev;
@@ -385,9 +418,7 @@ typedef struct NVMEState {
     NVMEIOCQueue cq[NVME_MAX_QID];
     NVMEIOSQueue sq[NVME_MAX_QID];
 
-    int    fd;
-    uint8_t *mapping_addr;
-    size_t mapping_size;
+    DiskInfo disk[NO_OF_NAMESPACES];
 
     /* Used to store the AQA,ASQ,ACQ between resets */
     struct AQState aqstate;
@@ -416,9 +447,6 @@ typedef struct NVMEState {
     uint32_t page_size;
     /* Pointer to Identify Controller Strucutre */
     NVMEIdentifyController *idtfy_ctrl;
-    /* Pointer to Identify Namespace Strucutre */
-    NVMEIdentifyNamespace *idtfy_ns;
-
 } NVMEState;
 
 /* Structure used for default initialization sequence (except doorbell) */
@@ -873,6 +901,16 @@ enum {
     NVME_CMD_NVM_ERR_CONFLICT       = 0x80,
 };
 
+/* Figure 20: Status Code – Media Error Values */
+enum {
+    NVME_WRITE_FAULT                         = 0x80,
+    NVME_UNRECOVERED_READ_ER                 = 0x81,
+    NVME_END_TO_END_GUARD_CHECK_ER           = 0x82,
+    NVME_END_TO_END_APPLICATION_TAG_CHECK_ER = 0x83,
+    NVME_END_TO_END_REFERENCE_TAG_CHECK_ER   = 0x84,
+    NVME_COMPARE_FAILURE                     = 0x85,
+    NVME_ACCESS_DENIED                       = 0x86,
+};
 
 /* 4.5 Completion Queue Entry */
 typedef struct NVMECQE {
@@ -914,9 +952,12 @@ uint8_t nvme_admin_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
 /* IO command processing */
 uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
 
-/* Storage file */
-int nvme_open_storage_file(NVMEState *n);
-int nvme_close_storage_file(NVMEState *n);
+/* Storage Disk */
+int nvme_open_storage_disk(NVMEState *n);
+int nvme_close_storage_disk(NVMEState *n);
+int nvme_create_storage_disk(NVMEState *n , uint32_t disk_num);
+int nvme_del_storage_disk(NVMEState *n , uint32_t disk_num);
+
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len);
 void nvme_dma_mem_write(target_phys_addr_t addr, uint8_t *buf, int len);

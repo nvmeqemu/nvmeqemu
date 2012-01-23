@@ -25,6 +25,9 @@
 #include "nvme_debug.h"
 #include "range.h"
 
+#define BYTES_PER_BLOCK 512
+#define BYTES_PER_MB (1024 * 1024)
+
 static const VMStateDescription vmstate_nvme = {
     .name = "nvme",
     .version_id = 1,
@@ -755,15 +758,15 @@ static void read_identify_cns(NVMEState *n)
     int index, i;
 
     LOG_NORM("%s(): called", __func__);
-    for (index = 0; index < NO_OF_NAMESPACES; index++) {
+    for (index = 0; index < n->num_namespaces; index++) {
         n->disk[index].idtfy_ns =
             qemu_mallocz(sizeof(*(n->disk[index].idtfy_ns)));
         if (!n->disk[index].idtfy_ns) {
             LOG_ERR("Identify Space not allocated!");
             return;
         }
-        n->disk[index].idtfy_ns->nsze = NAMESPACE_SIZE;
-        n->disk[index].idtfy_ns->ncap = NAMESPACE_CAP;
+        n->disk[index].idtfy_ns->nsze = (n->ns_size * BYTES_PER_MB) / BYTES_PER_BLOCK;
+        n->disk[index].idtfy_ns->ncap = (n->ns_size * BYTES_PER_MB) / BYTES_PER_BLOCK;
         n->disk[index].idtfy_ns->nuse = 0;
         n->disk[index].idtfy_ns->nlbaf = NO_LBA_FORMATS;
         n->disk[index].idtfy_ns->flbas = LBA_FORMAT_INUSE;
@@ -771,7 +774,7 @@ static void read_identify_cns(NVMEState *n)
         for (i = 0 ; i <= NO_LBA_FORMATS; i++) {
             n->disk[index].idtfy_ns->lbafx[i].lbads = LBA_SIZE;
         }
-        LOG_NORM("Capacity of namespace %d: %lu\n",
+        LOG_NORM("Capacity of namespace %d: %lu",
             index+1, n->disk[index].idtfy_ns->ncap);
     }
 
@@ -797,7 +800,7 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->vid = 0x8086;
     n->idtfy_ctrl->ssvid = 0x0111;
     /* number of supported name spaces bytes [516:519] */
-    n->idtfy_ctrl->nn = NO_OF_NAMESPACES;
+    n->idtfy_ctrl->nn = n->num_namespaces;
     n->idtfy_ctrl->acl = NVME_ABORT_COMMAND_LIMIT;
     n->idtfy_ctrl->aerl = ASYNC_EVENT_REQ_LIMIT;
     n->idtfy_ctrl->frmw = 1 << 1 | 0;
@@ -827,6 +830,20 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     NVMEState *n = DO_UPCAST(NVMEState, dev, pci_dev);
     uint32_t ret;
     uint16_t mps;
+    static uint32_t instance;
+
+    if (n->num_namespaces == 0 || n->num_namespaces > 16) {
+        LOG_ERR("bad number of namespaces value:%d, must be between 1 and 16",
+            n->num_namespaces);
+        return -1;
+    }
+    if (n->ns_size == 0 || n->ns_size > 8192) {
+        LOG_ERR("bad namespace size value:%d, must be between 1 and 8192",
+            n->ns_size);
+        return -1;
+    }
+    n->instance = instance++;
+    n->disk = (DiskInfo *)qemu_malloc(sizeof(DiskInfo)*n->num_namespaces);
 
     /* Zero out the Queue Datastructures */
     memset(n->cq, 0, sizeof(NVMEIOCQueue) * NVME_MAX_QID);
@@ -906,7 +923,7 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     LOG_DBG("Page Size: %d", n->page_size);
 
     /* Create the Storage Disk */
-    if (nvme_create_storage_disk(n, DISK_NO)) {
+    if (nvme_create_storage_disk(n, n->instance)) {
         LOG_NORM("Errors while creating NVME disk");
     }
     n->sq_processing_timer = qemu_new_timer_ns(vm_clock,
@@ -934,7 +951,7 @@ static int pci_nvme_uninit(PCIDevice *pci_dev)
     qemu_free(n->used_mask);
     qemu_free(n->idtfy_ctrl);
 
-    for (index = 0; index < NO_OF_NAMESPACES; index++) {
+    for (index = 0; index < n->num_namespaces; index++) {
         qemu_free(n->disk[index].idtfy_ns);
     }
 
@@ -948,7 +965,7 @@ static int pci_nvme_uninit(PCIDevice *pci_dev)
     }
 
     nvme_close_storage_disk(n);
-    nvme_del_storage_disk(n, DISK_NO);
+    nvme_del_storage_disk(n, n->instance);
     LOG_NORM("Freed NVME device memory");
     return 0;
 }
@@ -964,6 +981,8 @@ static PCIDeviceInfo nvme_info = {
     .init = pci_nvme_init,
     .exit = pci_nvme_uninit,
     .qdev.props = (Property[]) {
+        DEFINE_PROP_UINT32("namespaces", NVMEState, num_namespaces, 1),
+        DEFINE_PROP_UINT32("size", NVMEState, ns_size, 512),
         DEFINE_PROP_END_OF_LIST(),
     }
 };

@@ -33,6 +33,12 @@
 #define VMPORT_CMD_GETRAMSIZE 0x14
 
 #define VMPORT_ENTRIES 0x2c
+/* The following define's a magic value such that a knowing OS
+   can determine if it is running in a virtual environment or not.
+   VMware's ESXi breaks if it knows it is in a virtual environment
+   so just changing the magic value to something else so it is not
+   aware. */
+/* #define VMPORT_MAGIC   0x564D5868 */
 #define VMPORT_MAGIC   0x564D5860
 
 typedef struct _VMPortState

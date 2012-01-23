@@ -243,7 +243,7 @@ int nvme_create_storage_disk(NVMEState *n , uint32_t disk_num)
         return FAIL;
     }
 
-    for (i = 0; i < NO_OF_NAMESPACES; i++) {
+    for (i = 0; i < n->num_namespaces; i++) {
 
         /* Will auto adjust the size if number of namespace increases
          * to multiple digits */
@@ -311,7 +311,7 @@ int nvme_del_storage_disk(NVMEState *n , uint32_t disk_num)
 
     /* If required do ftruncate to remove the allocated
      * memory using posix_fallocate */
-    for (i = 0; i < NO_OF_NAMESPACES; i++) {
+    for (i = 0; i < n->num_namespaces; i++) {
         if (close(n->disk[i].fd) < 0) {
             ret = FAIL;
             LOG_ERR("Unable to close the nvme disk");
@@ -333,7 +333,7 @@ int nvme_close_storage_disk(NVMEState *n)
     uint32_t i;
     int ret = SUCCESS;
 
-    for (i = 0; i < NO_OF_NAMESPACES; i++) {
+    for (i = 0; i < n->num_namespaces; i++) {
         if (n->disk[i].mapping_addr != NULL) {
             if (munmap(n->disk[i].mapping_addr, n->disk[i].mapping_size) < 0) {
                 ret = FAIL;
@@ -361,7 +361,7 @@ int nvme_open_storage_disk(NVMEState *n)
     int ret = SUCCESS;
     uint16_t nvme_blk_sz;
 
-    for (i = 0; i < NO_OF_NAMESPACES; i++) {
+    for (i = 0; i < n->num_namespaces; i++) {
         if (n->disk[i].mapping_addr == NULL) {
             nvme_blk_sz = NVME_BLOCK_SIZE(n->disk[i].
                 idtfy_ns->lbafx[n->disk[i].idtfy_ns->flbas].lbads);

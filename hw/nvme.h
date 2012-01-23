@@ -67,23 +67,14 @@
 #define NVME_MSIX_NVECTORS 32
 
 /* Assume that block is 512 bytes */
-#define DISK_NO 1
 #define NVME_BUF_SIZE 4096
 #define NVME_BLOCK_SIZE(x) (1 << x)
 #define BLOCKS_PER_NAMESPACE 1048576
-#define NO_OF_NAMESPACES 4
 
 /* The value is reported in terms of a power of two (2^n).
  * LBA data size=2^9=512
  */
 #define LBA_SIZE 9
-
-#define NVME_STORAGE_SIZE \
-    (NO_OF_NAMESPACES * BLOCKS_PER_NAMESPACE * (1 << LBA_SIZE))
-
-#define NAMESPACE_SIZE BLOCKS_PER_NAMESPACE
-#define NAMESPACE_CAP  BLOCKS_PER_NAMESPACE
-
 
 #define NVME_EMPTY 0xffffffff
 
@@ -418,7 +409,10 @@ typedef struct NVMEState {
     NVMEIOCQueue cq[NVME_MAX_QID];
     NVMEIOSQueue sq[NVME_MAX_QID];
 
-    DiskInfo disk[NO_OF_NAMESPACES];
+    DiskInfo *disk;
+    uint32_t ns_size;
+    uint32_t num_namespaces;
+    uint32_t instance;
 
     /* Used to store the AQA,ASQ,ACQ between resets */
     struct AQState aqstate;

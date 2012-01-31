@@ -122,22 +122,21 @@ static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,
 *********************************************************************/
 static void update_ns_util(NVMEState *n, struct NVME_rw *e)
 {
-    uint16_t index;
+    uint64_t index;
+    DiskInfo *disk = &n->disk[e->nsid - 1];
 
     /* Update the namespace utilization */
-    for (index = 0; index <= e->nlb; index++) {
-        if (!(n->disk[(e->nsid - 1)].ns_util[(e->slba + index) / 8]
-            & (1 << ((e->slba + index) % 8)))) {
-            n->disk[(e->nsid - 1)].ns_util[((e->slba + index) / 8)] =
-                n->disk[(e->nsid - 1)].ns_util[((e->slba + index) / 8)]
-                    | (1 << ((e->slba + index) % 8));
-            n->disk[(e->nsid - 1)].idtfy_ns->nuse++;
+    for (index = e->slba; index <= e->nlb + e->slba; index++) {
+        if (!((disk->ns_util[index / 8]) & (1 << (index % 8)))) {
+            (disk->ns_util[(index / 8)]) |= (1 << (index % 8));
+            disk->idtfy_ns->nuse++;
         }
     }
 }
 
 uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 {
+    uint64_t tmp;
     struct NVME_rw *e = (struct NVME_rw *)sqe;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     uint8_t res = FAIL;
@@ -145,6 +144,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
     uint8_t *mapping_addr;
     /* Assuming 64KB as maximum bloack size */
     uint16_t nvme_blk_sz;
+    DiskInfo *disk;
 
     sf->sc = NVME_SC_SUCCESS;
     LOG_DBG("%s(): called", __func__);
@@ -172,6 +172,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
         sf->sc = NVME_SC_CAP_EXCEEDED;
         goto exit;
     }
+    disk = &n->disk[(e->nsid - 1)];
 
     /* Read in the command */
     nvme_blk_sz = NVME_BLOCK_SIZE(n->disk[(e->nsid - 1)].
@@ -214,6 +215,27 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 ns_utl:
     if (e->opcode == NVME_CMD_WRITE) {
         update_ns_util(n, e);
+        if (++disk->host_write_commands[0] == 0) {
+            ++disk->host_write_commands[1];
+        }
+        disk->write_data_counter += e->nlb + 1;
+        tmp = disk->data_units_written[0];
+        disk->data_units_written[0] += (disk->write_data_counter / 1000);
+        disk->write_data_counter %= 1000;
+        if (tmp > disk->data_units_written[0]) {
+            ++disk->data_units_written[1];
+        }
+    } else if (e->opcode == NVME_CMD_READ) {
+        if (++disk->host_read_commands[0] == 0) {
+            ++disk->host_read_commands[1];
+        }
+        disk->read_data_counter += e->nlb + 1;
+        tmp = disk->data_units_read[0];
+        disk->data_units_read[0] += (disk->read_data_counter / 1000);
+        disk->read_data_counter %= 1000;
+        if (tmp > disk->data_units_read[0]) {
+            ++disk->data_units_read[1];
+        }
     }
 exit:
     return res;

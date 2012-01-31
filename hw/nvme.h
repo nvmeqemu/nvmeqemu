@@ -10,6 +10,10 @@
 #include <pthread.h>
 #include <sched.h>
 
+#ifndef min
+#define min(x, y) ((x) < (y) ? (x) : (y))
+#endif
+
 /* Config FIlE names */
 #define NVME_CONFIG_FILE "NVME_device_NVME_config"
 #define PCI_CONFIG_FILE "NVME_device_PCI_config"
@@ -69,7 +73,6 @@
 /* Assume that block is 512 bytes */
 #define NVME_BUF_SIZE 4096
 #define NVME_BLOCK_SIZE(x) (1 << x)
-#define BLOCKS_PER_NAMESPACE 1048576
 
 /* The value is reported in terms of a power of two (2^n).
  * LBA data size=2^9=512
@@ -385,7 +388,15 @@ typedef struct DiskInfo {
     /* Pointer to Identify Namespace Strucutre */
     NVMEIdentifyNamespace *idtfy_ns;
     /* Namespace utilization bitmasks (rounded off) */
-    uint8_t ns_util[(BLOCKS_PER_NAMESPACE + 0x07) / 0x08];
+    uint8_t *ns_util;
+
+    uint32_t write_data_counter;
+    uint32_t read_data_counter;
+
+    uint64_t data_units_read[2];
+    uint64_t data_units_written[2];
+    uint64_t host_read_commands[2];
+    uint64_t host_write_commands[2];
 } DiskInfo;
 
 typedef struct NVMEState {
@@ -413,6 +424,8 @@ typedef struct NVMEState {
     uint32_t ns_size;
     uint32_t num_namespaces;
     uint32_t instance;
+
+    time_t start_time;
 
     /* Used to store the AQA,ASQ,ACQ between resets */
     struct AQState aqstate;
@@ -596,6 +609,32 @@ enum {
     NVME_CMD_WRITE = 0x01,
     NVME_CMD_READ  = 0x02,
     NVME_CMD_LAST,
+};
+
+typedef struct NVMESmartLog {
+    uint8_t  critical_warning;
+    uint8_t  temperature[2];
+    uint8_t  available_spare;
+    uint8_t  available_spare_threshold;
+    uint8_t  percentage_used;
+    uint8_t  reserved1[26];
+    uint64_t data_units_read[2];
+    uint64_t data_units_written[2];
+    uint64_t host_read_commands[2];
+    uint64_t host_write_commands[2];
+    uint64_t controller_busy_time[2];
+    uint64_t power_cycles[2];
+    uint64_t power_on_hours[2];
+    uint64_t unsafe_shutdowns[2];
+    uint64_t media_errors[2];
+    uint64_t number_of_error_log_entries[2];
+    uint8_t  reserved2[320];
+} NVMESmartLog;
+
+enum {
+    NVME_LOG_ERROR_INFORMATION   = 0x01,
+    NVME_LOG_SMART_INFORMATION   = 0x02,
+    NVME_LOG_FW_SLOT_INFORMATION = 0x03,
 };
 
 typedef struct NVMEAdmCmdDeleteSQ {

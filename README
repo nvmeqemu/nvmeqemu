@@ -83,3 +83,8 @@ git clone git@github.com:nvmeqemu/nvmeqemu.git
            These file names are unique and thus there should not be multiple files with the above names inside the directory from where the qemu is run by executing Step 6
            Program should be executed from an higher level directory so that both the config files are available inside the directory itself else both spaces will be initialized to
            defaulted values
+    2. Additional command line options:
+            You can configure the number of namespaces and their sizes from the command line. The options are: namespaces=<number_of_namespaces> and size=<size_in_MB>. These options go after the "-device namespace". Example
+            sudo ./qemu-system-x86_64 -m 1024 -hda <path_to_virtual_HD>/<your_virtual_HD_filename.img> -device,namespace=1,size=1024 nvme -smp 2
+            The program limits the number of namespaces to 16 per device and 8GB in size. There will be 1 namespace of 512 MB by default.
+

@@ -619,6 +619,7 @@ static void clear_nvme_device(NVMEState *n)
         nvme_cntrl_read_config(n, NVME_ACQ, DWORD);
     /* Update NVME space registery from config file */
     read_file(n, NVME_SPACE);
+    n->intr_vect = 0;
 
     /* Writing the Admin Queue Attributes after reset */
     nvme_cntrl_write_config(n, NVME_AQA, n->aqstate.aqa, DWORD);
@@ -765,8 +766,10 @@ static void read_identify_cns(NVMEState *n)
             LOG_ERR("Identify Space not allocated!");
             return;
         }
-        n->disk[index].idtfy_ns->nsze = (n->ns_size * BYTES_PER_MB) / BYTES_PER_BLOCK;
-        n->disk[index].idtfy_ns->ncap = (n->ns_size * BYTES_PER_MB) / BYTES_PER_BLOCK;
+        n->disk[index].idtfy_ns->nsze = ((uint64_t)n->ns_size * BYTES_PER_MB) /
+            BYTES_PER_BLOCK;
+        n->disk[index].idtfy_ns->ncap = ((uint64_t)n->ns_size * BYTES_PER_MB) /
+            BYTES_PER_BLOCK;
         n->disk[index].idtfy_ns->nuse = 0;
         n->disk[index].idtfy_ns->nlbaf = NO_LBA_FORMATS;
         n->disk[index].idtfy_ns->flbas = LBA_FORMAT_INUSE;
@@ -774,6 +777,8 @@ static void read_identify_cns(NVMEState *n)
         for (i = 0 ; i <= NO_LBA_FORMATS; i++) {
             n->disk[index].idtfy_ns->lbafx[i].lbads = LBA_SIZE;
         }
+        n->disk[index].ns_util = qemu_mallocz((((uint64_t)n->ns_size *
+            BYTES_PER_MB) / BYTES_PER_BLOCK + 0x7) / 0x8);
         LOG_NORM("Capacity of namespace %d: %lu",
             index+1, n->disk[index].idtfy_ns->ncap);
     }
@@ -806,6 +811,7 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->frmw = 1 << 1 | 0;
     n->idtfy_ctrl->npss = NO_POWER_STATE_SUPPORT;
     n->idtfy_ctrl->awun = 0xff;
+    n->idtfy_ctrl->lpa = 1 << 0;
 
     power = (struct power_state_description *)&(n->idtfy_ctrl->psd0);
     power->mp = 1;
@@ -831,6 +837,8 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     uint32_t ret;
     uint16_t mps;
     static uint32_t instance;
+
+    n->start_time = time(NULL);
 
     if (n->num_namespaces == 0 || n->num_namespaces > 16) {
         LOG_ERR("bad number of namespaces value:%d, must be between 1 and 16",

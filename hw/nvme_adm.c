@@ -450,8 +450,108 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     return 0;
 }
 
+static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    uint32_t len;
+    time_t current_seconds;
+    NVMESmartLog smart_log;
+    memset(&smart_log, 0x0, sizeof(smart_log));
+    LOG_NORM("%s called", __func__);
+    if (cmd->nsid == 0xffffffff) {
+        /* return info for entire device */
+        int i;
+        uint64_t dur[2] = {0, 0};
+        uint64_t duw[2] = {0, 0};
+        uint64_t hrc[2] = {0, 0};
+        uint64_t hwc[2] = {0, 0};
+        uint64_t total_use = 0;
+        uint64_t total_size = 0;
+        for (i = 0; i < n->num_namespaces; ++i) {
+            uint64_t tmp;
+            DiskInfo *disk = &n->disk[i];
+
+            tmp = dur[0];
+            dur[0] += disk->data_units_read[0];
+            dur[1] += disk->data_units_read[1];
+            if (tmp > dur[0]) {
+                ++dur[1];
+            }
+
+            tmp = duw[0];
+            duw[0] += disk->data_units_written[0];
+            duw[1] += disk->data_units_written[1];
+            if (tmp > duw[0]) {
+                ++duw[1];
+            }
+
+            tmp = hrc[0];
+            hrc[0] += disk->host_read_commands[0];
+            hrc[1] += disk->host_read_commands[1];
+            if (tmp > hrc[0]) {
+                ++hrc[1];
+            }
+
+            tmp = hwc[0];
+            hwc[0] += disk->host_write_commands[0];
+            hwc[1] += disk->host_write_commands[1];
+            if (tmp > hwc[0]) {
+                ++hwc[1];
+            }
+
+            total_size += disk->idtfy_ns->nsze;
+            total_use += disk->idtfy_ns->nuse;
+        }
+
+        smart_log.data_units_read[0] = dur[0];
+        smart_log.data_units_read[1] = dur[1];
+        smart_log.data_units_written[0] = duw[0];
+        smart_log.data_units_written[1] = duw[1];
+        smart_log.host_read_commands[0] = hrc[0];
+        smart_log.host_read_commands[1] = hrc[1];
+        smart_log.host_write_commands[0] = hwc[0];
+        smart_log.host_write_commands[1] = hwc[1];
+        smart_log.available_spare = 100 - (uint32_t)((((double)total_use) /
+            total_size) * 100);
+    } else if (cmd->nsid > 0 && cmd->nsid <= n->num_namespaces) {
+        LOG_NORM("getting smart log info for instance:%d nsid:%d", n->instance,
+            cmd->nsid);
+        DiskInfo *disk = &n->disk[cmd->nsid - 1];
+        smart_log.data_units_read[0] = disk->data_units_read[0];
+        smart_log.data_units_read[1] = disk->data_units_read[1];
+        smart_log.data_units_written[0] = disk->data_units_written[0];
+        smart_log.data_units_written[1] = disk->data_units_written[1];
+        smart_log.host_read_commands[0] = disk->host_read_commands[0];
+        smart_log.host_read_commands[1] = disk->host_read_commands[1];
+        smart_log.host_write_commands[0] = disk->host_write_commands[0];
+        smart_log.host_write_commands[1] = disk->host_write_commands[1];
+        smart_log.available_spare = 100 - (uint32_t)
+            ((((double)disk->idtfy_ns->nuse) / disk->idtfy_ns->nsze) * 100);
+    } else {
+        NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return 0;
+    }
+
+    /* just make up a temperature. 0x143 Kelvin is 50 degrees C. */
+    smart_log.temperature[0] = 0x43;
+    smart_log.temperature[1] = 0x1;
+
+    current_seconds = time(NULL);
+    smart_log.power_on_hours[0] = ((current_seconds - n->start_time) / 60) / 60;
+
+    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), sizeof(smart_log));
+    nvme_dma_mem_write(cmd->prp1, (uint8_t *)&smart_log, len);
+    if (len < sizeof(smart_log)) {
+        nvme_dma_mem_write(cmd->prp2,
+            (uint8_t *)((uint8_t *)&smart_log + len),
+            sizeof(smart_log) - len);
+    }
+    return 0;
+}
+
 static uint32_t adm_cmd_get_log_page(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
+    NVMEAdmCmdGetLogPage *c = (NVMEAdmCmdGetLogPage *)cmd;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     sf->sc = NVME_SC_SUCCESS;
 
@@ -463,12 +563,23 @@ static uint32_t adm_cmd_get_log_page(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     LOG_NORM("%s(): called", __func__);
 
+    switch (c->lid) {
+    case NVME_LOG_ERROR_INFORMATION:
+        break;
+    case NVME_LOG_SMART_INFORMATION:
+        return adm_cmd_smart_info(n, cmd, cqe);
+        break;
+    case NVME_LOG_FW_SLOT_INFORMATION:
+        break;
+    default:
+        sf->sc = NVME_INVALID_LOG_PAGE;
+        break;
+    }
     return 0;
 }
 
 static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
 {
-
     uint32_t len;
     LOG_NORM("%s(): copying %lu data into addr %lu",
         __func__, sizeof(*n->idtfy_ctrl), cmd->prp1);

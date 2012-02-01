@@ -621,6 +621,11 @@ static void clear_nvme_device(NVMEState *n)
     read_file(n, NVME_SPACE);
     n->intr_vect = 0;
 
+    for (i = 0; i < NVME_MAX_QID; i++) {
+        memset(&(n->sq[i]), 0, sizeof(NVMEIOSQueue));
+        memset(&(n->cq[i]), 0, sizeof(NVMEIOCQueue));
+    }
+
     /* Writing the Admin Queue Attributes after reset */
     nvme_cntrl_write_config(n, NVME_AQA, n->aqstate.aqa, DWORD);
     nvme_cntrl_write_config(n, NVME_ASQ, (uint32_t) n->aqstate.asqa, DWORD);
@@ -629,11 +634,9 @@ static void clear_nvme_device(NVMEState *n)
     nvme_cntrl_write_config(n, NVME_ACQ, (uint32_t) n->aqstate.acqa, DWORD);
     nvme_cntrl_write_config(n, NVME_ACQ + 4,
         (uint32_t) (n->aqstate.acqa >> 32), DWORD);
+    n->sq[ASQ_ID].dma_addr = n->aqstate.asqa;
+    n->cq[ACQ_ID].dma_addr = n->aqstate.acqa;
 
-    for (i = 0; i < NVME_MAX_QID; i++) {
-        memset(&(n->sq[i]), 0, sizeof(NVMEIOSQueue));
-        memset(&(n->cq[i]), 0, sizeof(NVMEIOCQueue));
-    }
 }
 
 /*********************************************************************

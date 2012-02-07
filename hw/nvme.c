@@ -636,6 +636,8 @@ static void clear_nvme_device(NVMEState *n)
         (uint32_t) (n->aqstate.acqa >> 32), DWORD);
     n->sq[ASQ_ID].dma_addr = n->aqstate.asqa;
     n->cq[ACQ_ID].dma_addr = n->aqstate.acqa;
+    n->sq[ASQ_ID].size = n->aqstate.aqa & 0xfff;
+    n->cq[ACQ_ID].size = (n->aqstate.aqa >> 16) & 0xfff;
 
 }
 

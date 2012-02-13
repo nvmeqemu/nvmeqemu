@@ -57,6 +57,8 @@
 /* The spec requires giving the table structure
  * a 4K aligned region all by itself. */
 #define MSIX_PAGE_SIZE 0x1000
+/* Reserve second half of the page for pending bits */
+#define MSIX_PAGE_PENDING (MSIX_PAGE_SIZE / 2)
 /* Give 8kB for registers. Should be OK for 512 queues. */
 #define NVME_REG_SIZE (1024 * 8)
 /* Size of NVME Controller Registers except the Doorbells */

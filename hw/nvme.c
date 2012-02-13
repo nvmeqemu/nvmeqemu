@@ -43,7 +43,8 @@ static inline uint8_t range_covers_reg(uint64_t, uint64_t, uint64_t,
 static void process_doorbell(NVMEState *, target_phys_addr_t, uint32_t);
 static void read_file(NVMEState *, uint8_t);
 static void sq_processing_timer_cb(void *);
-
+static int nvme_irqcq_empty(NVMEState *, uint32_t);
+static void msix_clr_pending(PCIDevice *, uint32_t);
 /*********************************************************************
     Function     :    process_doorbell
     Description  :    Processing Doorbell and SQ commands
@@ -75,6 +76,15 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
         }
 
         nvme_dev->cq[queue_id].head = val & 0xffff;
+        /* Reset the P bit if head == tail for all Queues on
+         * a specific interrupt vector */
+        if (nvme_dev->cq[queue_id].irq_enabled &&
+            !(nvme_irqcq_empty(nvme_dev, nvme_dev->cq[queue_id].vector))) {
+            /* reset the P bit */
+            LOG_DBG("Reset P bit for vec:%d", nvme_dev->cq[queue_id].vector);
+            msix_clr_pending(&nvme_dev->dev, nvme_dev->cq[queue_id].vector);
+
+        }
     } else {
         /* SQ */
         queue_id = (addr - NVME_SQ0TDBL) / QUEUE_BASE_ADDRESS_WIDTH;
@@ -97,6 +107,46 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
         }
     }
     return;
+}
+
+/*********************************************************************
+    Function     :    msix_clr_pending
+    Description  :    Clears the Pending Bit for the passed in vector
+                      in msix pba table
+    Return Type  :    void
+    Arguments    :    PCIDevice * : Pointer to PCI device State
+                      uint32_t : Vector
+*********************************************************************/
+static void msix_clr_pending(PCIDevice *dev, uint32_t vector)
+{
+    uint8_t *pending_byte = dev->msix_table_page + MSIX_PAGE_PENDING +
+        vector / 8;
+    uint8_t pending_mask = 1 << (vector % 8);
+    *pending_byte &= ~pending_mask;
+}
+/*********************************************************************
+    Function     :    nvme_irqcqs_empty
+    Description  :    Checks whether all the Queues associated with the
+                      passed in vector are empty
+    Return Type  :    int (0:1 SUCCESS:FAILURE)
+    Arguments    :    NVMEState * : Pointer to NVME device State
+                      uint32_t : Vector
+*********************************************************************/
+static int nvme_irqcq_empty(NVMEState *nvme_dev, uint32_t vector)
+{
+    int index, ret_val = FAIL;
+    for (index = 0; index < NVME_MAX_QID; index++) {
+        if (nvme_dev->cq[index].vector == vector &&
+            nvme_dev->cq[index].irq_enabled) {
+            if (nvme_dev->cq[index].head != nvme_dev->cq[index].tail) {
+                ret_val = FAIL;
+                break;
+            } else {
+                ret_val = SUCCESS;
+            }
+        }
+    }
+    return ret_val;
 }
 
 static void sq_processing_timer_cb(void *param)

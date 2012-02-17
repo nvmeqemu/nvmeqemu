@@ -6,6 +6,7 @@
  *    Krzysztof Wierzbicki <krzysztof.wierzbicki@intel.com>
  *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
+ *    Keith Busch <keith.busch@intel.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -34,6 +35,23 @@ static uint32_t adm_cmd_abort(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_set_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_get_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+
+static uint32_t aon_cmd_sec_send(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t aon_cmd_sec_recv(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t aon_adm_cmd_create_pd(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t aon_adm_cmd_create_stag(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe);
+static uint32_t aon_adm_cmd_delete_pd(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t aon_adm_cmd_delete_stag(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe);
+static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t aon_adm_cmd_create_nstag(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe);
+static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t aon_adm_cmd_delete_nstag(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe);
+static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 
 typedef uint32_t adm_command_func(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 
@@ -48,6 +66,20 @@ static adm_command_func * const adm_cmds_funcs[] = {
     [NVME_ADM_CMD_SET_FEATURES] = adm_cmd_set_features,
     [NVME_ADM_CMD_GET_FEATURES] = adm_cmd_get_features,
     [NVME_ADM_CMD_ASYNC_EV_REQ] = adm_cmd_async_ev_req,
+
+    [NVME_ADM_CMD_FORMAT_NVM] = adm_cmd_format_nvm,
+    [NVME_ADM_CMD_SECURITY_SEND] = aon_cmd_sec_send,
+    [NVME_ADM_CMD_SECURITY_RECV] = aon_cmd_sec_recv,
+
+    [AON_ADM_CMD_CREATE_PD] = aon_adm_cmd_create_pd,
+    [AON_ADM_CMD_CREATE_STAG] = aon_adm_cmd_create_stag,
+    [AON_ADM_CMD_DELETE_PD] = aon_adm_cmd_delete_pd,
+    [AON_ADM_CMD_DELETE_STAG] = aon_adm_cmd_delete_stag,
+    [AON_ADM_CMD_CREATE_NAMESPACE] = aon_adm_cmd_create_ns,
+    [AON_ADM_CMD_CREATE_NAMESPACE_TAG] = aon_adm_cmd_create_nstag,
+    [AON_ADM_CMD_DELETE_NAMESPACE] = aon_adm_cmd_delete_ns,
+    [AON_ADM_CMD_DELETE_NAMESPACE_TAG] = aon_adm_cmd_delete_nstag,
+    [AON_ADM_CMD_MODIFY_NAMESPACE] = aon_adm_cmd_mod_ns,
     [NVME_ADM_CMD_LAST] = NULL,
 };
 
@@ -468,7 +500,10 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         uint64_t total_size = 0;
         for (i = 0; i < n->num_namespaces; ++i) {
             uint64_t tmp;
-            DiskInfo *disk = &n->disk[i];
+            DiskInfo *disk = n->disk[i];
+            if (disk == NULL) {
+                continue;
+            }
 
             tmp = dur[0];
             dur[0] += disk->data_units_read[0];
@@ -513,9 +548,16 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         smart_log.available_spare = 100 - (uint32_t)((((double)total_use) /
             total_size) * 100);
     } else if (cmd->nsid > 0 && cmd->nsid <= n->num_namespaces) {
-        LOG_NORM("getting smart log info for instance:%d nsid:%d", n->instance,
-            cmd->nsid);
-        DiskInfo *disk = &n->disk[cmd->nsid - 1];
+        LOG_NORM("getting smart log info for instance:%d nsid:%d",
+            n->instance, cmd->nsid);
+
+        DiskInfo *disk = n->disk[cmd->nsid - 1];
+        if (disk == NULL) {
+            NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+            sf->sc = NVME_SC_INVALID_NAMESPACE;
+            return 0;
+        }
+
         smart_log.data_units_read[0] = disk->data_units_read[0];
         smart_log.data_units_read[1] = disk->data_units_read[1];
         smart_log.data_units_written[0] = disk->data_units_written[0];
@@ -528,7 +570,7 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
             ((((double)disk->idtfy_ns->nuse) / disk->idtfy_ns->nsze) * 100);
     } else {
         NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
-        sf->sc = NVME_SC_INVALID_OPCODE;
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
         return 0;
     }
 
@@ -542,8 +584,7 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), sizeof(smart_log));
     nvme_dma_mem_write(cmd->prp1, (uint8_t *)&smart_log, len);
     if (len < sizeof(smart_log)) {
-        nvme_dma_mem_write(cmd->prp2,
-            (uint8_t *)((uint8_t *)&smart_log + len),
+        nvme_dma_mem_write(cmd->prp2, (uint8_t *)((uint8_t *)&smart_log + len),
             sizeof(smart_log) - len);
     }
     return 0;
@@ -595,21 +636,32 @@ static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
 }
 
 /* Needs to be checked if this namespace exists. */
-static uint32_t adm_cmd_id_ns(NVMEState *n, NVMECmd *cmd)
+static uint32_t adm_cmd_id_ns(DiskInfo *disk, NVMECmd *cmd)
 {
     uint32_t len;
-    LOG_NORM("%s(): called", __func__);
+    LOG_NORM("%s(): nsid:%d called", __func__, cmd->nsid);
+
+    if (disk == NULL) {
+        uint8_t blank_ns[4096];
+        LOG_NORM("%s(): empty slot in namespace, fill 0", __func__);
+        memset(blank_ns, 0x0, sizeof(blank_ns));
+        len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
+        nvme_dma_mem_write(cmd->prp1, blank_ns, len);
+        if (len != sizeof(blank_ns)) {
+            nvme_dma_mem_write(cmd->prp2, (uint8_t *)(blank_ns + len),
+                sizeof(blank_ns) - len);
+        }
+        return 0;
+    }
 
     LOG_DBG("Current Namespace utilization: %lu",
-        n->disk[(cmd->nsid - 1)].idtfy_ns->nuse);
+        disk->idtfy_ns->nuse);
 
     len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
-    nvme_dma_mem_write(cmd->prp1,
-        (uint8_t *) n->disk[(cmd->nsid - 1)].idtfy_ns, len);
-    if (len != sizeof(*(n->disk[(cmd->nsid - 1)].idtfy_ns))) {
-        nvme_dma_mem_write(cmd->prp2,
-            (uint8_t *) ((uint8_t *) n->disk[(cmd->nsid - 1)].idtfy_ns + len),
-                (sizeof(*(n->disk[(cmd->nsid - 1)].idtfy_ns)) - len));
+    nvme_dma_mem_write(cmd->prp1, (uint8_t *) disk->idtfy_ns, len);
+    if (len != sizeof(*(disk->idtfy_ns))) {
+        nvme_dma_mem_write(cmd->prp2, (uint8_t *)((uint8_t *)
+            disk->idtfy_ns + len), (sizeof(*(disk->idtfy_ns)) - len));
     }
     return 0;
 }
@@ -645,12 +697,12 @@ static uint32_t adm_cmd_identify(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         ret = adm_cmd_id_ctrl(n, cmd);
     } else {
         /* Check for name space */
-        if (c->nsid == 0 || (c->nsid > n->idtfy_ctrl->nn)) {
+        if (c->nsid == 0 || (c->nsid > n->num_namespaces)) {
             LOG_NORM("%s(): Invalid Namespace ID", __func__);
             sf->sc = NVME_SC_INVALID_NAMESPACE;
             return FAIL;
         }
-        ret = adm_cmd_id_ns(n, cmd);
+        ret = adm_cmd_id_ns(n->disk[cmd->nsid - 1], cmd);
     }
     if (ret) {
         sf->sc = NVME_SC_INTERNAL;
@@ -908,7 +960,6 @@ static uint32_t adm_cmd_get_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
 static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
-    /* NVMEAdmCmdAsyncEvRq *c = (NVMEAdmCmdAsyncEvRq *)cmd; */
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     sf->sc = NVME_SC_SUCCESS;
 
@@ -921,3 +972,411 @@ static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_NORM("%s(): called", __func__);
     return 0;
 }
+
+/* aon specific */
+static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    uint32_t dw10 = cmd->cdw10;
+    uint32_t nsid;
+    DiskInfo *disk;
+
+    sf->sc = NVME_SC_SUCCESS;
+    if (cmd->opcode != NVME_ADM_CMD_FORMAT_NVM || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    /* check for invalid settings */
+    if (dw10 >> 4 & 0x1f) {
+        /* meta-data or protection information set, not supported yet */
+        LOG_NORM("%s(): Invalid format %x", __func__, dw10);
+        sf->sc = NVME_INVALID_FORMAT;
+        return FAIL;
+    }
+
+    nsid = cmd->nsid;
+    if (nsid > n->num_namespaces || nsid == 0) {
+        LOG_NORM("%s(): bad nsid", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+    if (n->disk[nsid - 1] == NULL) {
+        LOG_NORM("%s(): nsid not created", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+
+    disk = n->disk[nsid - 1];
+    disk->idtfy_ns->flbas = (disk->idtfy_ns->flbas & ~(0xf)) | (dw10 & 0xf);
+
+    LOG_NORM("%s(): called", __func__);
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    NVMEIdentifyNamespace ns;
+    uint32_t nsid;
+    uint64_t ns_bytes;
+    uint32_t block_shift;
+
+    sf->sc = NVME_SC_SUCCESS;
+
+    if (cmd->opcode != AON_ADM_CMD_CREATE_NAMESPACE || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    if (cmd->prp1 == 0) {
+        LOG_NORM("%s(): prp1 absent", __func__);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    /* XXX: spec requires only one prp, forcing page alignment.
+     * Why not use two? */
+    if (cmd->prp1 % PAGE_SIZE != 0) {
+        LOG_NORM("%s(): prp1 not aligned", __func__);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    nsid = cmd->nsid;
+    if (nsid > n->num_namespaces || nsid == 0) {
+        LOG_NORM("%s(): bad nsid", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+
+    if (n->disk[nsid - 1] != NULL) {
+        LOG_NORM("%s(): nsid already created", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+
+    nvme_dma_mem_read((target_phys_addr_t)cmd->prp1, (uint8_t *)&ns, PAGE_SIZE);
+    block_shift = ns.lbafx[ns.flbas & 0xf].lbads;
+    if (block_shift < 9 || block_shift > 12) {
+        LOG_NORM("%s(): bad block size", __func__);
+        sf->sc = NVME_AON_INVALID_LOGICAL_BLOCK_FORMAT;
+        return FAIL;
+    }
+
+    ns_bytes = ns.nsze * (1 << block_shift);
+    if (ns_bytes > n->aon_ctrl_vs->tus ||
+            ns_bytes < (1 << n->aon_ctrl_vs->mns)) {
+        LOG_NORM("%s(): bad ns size:%lu", __func__, ns.nsze);
+        sf->sc = NVME_AON_INVALID_NAMESPACE_SIZE;
+        return FAIL;
+    }
+
+    if (ns.ncap != ns.nsze) {
+        LOG_NORM("%s(): bad ncap", __func__);
+        sf->sc = NVME_AON_INVALID_NAMESPACE_CAPACITY;
+        return FAIL;
+    }
+    if (ns.mc || ns.dpc || ns.dps) {
+        /* does not support meta-data or data protection */
+        LOG_NORM("%s(): bad data protection/meta-data", __func__);
+        sf->sc = NVME_AON_INVALID_END_TO_END_DATA_PROTECTION_CONFIGURATION;
+        return FAIL;
+    }
+
+    set_bit(nsid, n->nn_vector);
+    n->idtfy_ctrl->nn = find_last_bit(n->nn_vector, n->num_namespaces + 2);
+    n->aon_ctrl_vs->tus -= ns_bytes;
+    n->disk[nsid - 1] = (DiskInfo *)qemu_mallocz(sizeof(DiskInfo));
+    n->disk[nsid - 1]->ns_util = qemu_mallocz((ns.nsze /
+        (1 << block_shift) + 7) / 8);
+    n->disk[nsid - 1]->idtfy_ns = qemu_mallocz(sizeof(ns));
+    memcpy(n->disk[nsid - 1]->idtfy_ns, &ns, sizeof(ns));
+
+    nvme_create_storage_disk(n->instance, nsid, n->disk[nsid - 1]);
+    nvme_open_storage_disk(n->disk[nsid - 1]);
+
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+    uint32_t nsid;
+    uint64_t ns_bytes;
+    DiskInfo *disk;
+
+    if (cmd->opcode != AON_ADM_CMD_DELETE_NAMESPACE || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    nsid = cmd->nsid;
+    if (nsid > n->num_namespaces || nsid == 0) {
+        LOG_NORM("%s(): bad nsid", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+    if (n->disk[nsid - 1] == NULL) {
+        LOG_NORM("%s(): nsid not created", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+
+    disk = n->disk[nsid - 1];
+
+    ns_bytes = disk->idtfy_ns->nsze * (1 << disk->idtfy_ns->lbafx[
+        disk->idtfy_ns->flbas & 0xf].lbads);
+
+    clear_bit(nsid, n->nn_vector);
+    n->idtfy_ctrl->nn = find_last_bit(n->nn_vector, n->num_namespaces + 2);
+    if(n->idtfy_ctrl->nn == n->num_namespaces + 2)
+        n->idtfy_ctrl->nn = 0;
+    n->aon_ctrl_vs->tus += ns_bytes;
+
+    nvme_close_storage_disk(disk);
+    nvme_del_storage_disk(disk);
+
+    qemu_free(disk->idtfy_ns);
+    qemu_free(disk->ns_util);
+    qemu_free(disk);
+
+    n->disk[nsid - 1] = NULL;
+
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+    NVMEIdentifyNamespace ns;
+    DiskInfo *disk;
+    uint32_t nsid;
+    uint64_t ns_bytes;
+    uint64_t current_bytes;
+    uint32_t block_size;
+
+    if (cmd->opcode != AON_ADM_CMD_MODIFY_NAMESPACE || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    nsid = cmd->nsid;
+    if (nsid > n->num_namespaces || nsid == 0) {
+        LOG_NORM("%s(): bad nsid", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+    if (n->disk[nsid - 1] == NULL) {
+        LOG_NORM("%s(): nsid not created", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+
+    /* XXX: spec requires only one prp, forcing page alignment.
+     * Why not use two? */
+    if (cmd->prp1 % PAGE_SIZE != 0) {
+        LOG_NORM("%s(): prp1 not aligned", __func__);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+
+    disk = n->disk[nsid - 1];
+
+    nvme_dma_mem_read((target_phys_addr_t)cmd->prp1, (uint8_t *)&ns, PAGE_SIZE);
+    if (ns.flbas != disk->idtfy_ns->flbas) {
+        LOG_NORM("%s(): modify cannot change flbas", __func__);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    block_size = 1 << (ns.lbafx[ns.flbas & 0xf].lbads);
+    if (ns.lbafx[ns.flbas & 0xf].lbads != disk->idtfy_ns->lbafx[
+            ns.flbas & 0xf].lbads) {
+        LOG_NORM("%s(): modify cannot change block size", __func__);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    ns_bytes = ns.nsze * block_size;
+    current_bytes = disk->idtfy_ns->nsze * block_size;
+    if (ns_bytes > current_bytes) {
+        if (ns_bytes - current_bytes > n->aon_ctrl_vs->tus) {
+            LOG_NORM("%s(): bad ns size:%lu", __func__, ns.nsze);
+            sf->sc = NVME_AON_INVALID_NAMESPACE_SIZE;
+            return FAIL;
+        }
+    }
+    if (ns.ncap != ns.nsze) {
+        LOG_NORM("%s(): bad ncap", __func__);
+        sf->sc = NVME_AON_INVALID_NAMESPACE_CAPACITY;
+        return FAIL;
+    }
+    if (ns.mc || ns.dpc || ns.dps) {
+        /* does not support meta-data or data protection */
+        LOG_NORM("%s(): bad data protection/meta-data", __func__);
+        sf->sc = NVME_AON_INVALID_END_TO_END_DATA_PROTECTION_CONFIGURATION;
+        return FAIL;
+    }
+
+    if (disk->idtfy_ns->nsze != ns.nsze) {
+        /* change the size of the disk */
+        disk->ns_util = qemu_realloc(disk->ns_util,
+            (ns.nsze / block_size + 7) / 8);
+        if (posix_fallocate(disk->fd, 0, ns.ncap * block_size) != 0) {
+            LOG_ERR("Error while modifying size of namespace");
+            return FAIL;
+        }
+        if (ns_bytes > current_bytes) {
+            n->aon_ctrl_vs->tus -= ns_bytes - current_bytes;
+        } else if (ns_bytes < current_bytes) {
+            n->aon_ctrl_vs->tus += current_bytes - ns_bytes;
+        }
+    }
+
+    disk->idtfy_ns->nsze = ns.nsze;
+    disk->idtfy_ns->ncap = ns.ncap;
+    disk->idtfy_ns->nsfeat = ns.nsfeat;
+    disk->idtfy_ns->nlbaf = ns.nlbaf;
+    disk->idtfy_ns->dpc = ns.dpc;
+    memcpy(disk->idtfy_ns->lbafx, ns.lbafx, sizeof(ns.lbafx));
+
+    return 0;
+}
+
+static uint32_t aon_cmd_sec_send(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+
+    if (cmd->opcode != NVME_ADM_CMD_SECURITY_SEND || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+    return 0;
+}
+
+static uint32_t aon_cmd_sec_recv(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+
+    if (cmd->opcode != NVME_ADM_CMD_SECURITY_RECV || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_create_pd(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+
+    if (cmd->opcode != AON_ADM_CMD_CREATE_PD || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_delete_pd(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+
+    if (cmd->opcode != AON_ADM_CMD_DELETE_PD || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_create_stag(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+
+    if (cmd->opcode != AON_ADM_CMD_CREATE_STAG || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_delete_stag(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+
+    if (cmd->opcode != AON_ADM_CMD_DELETE_STAG || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_create_nstag(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+
+    if (cmd->opcode != AON_ADM_CMD_CREATE_NAMESPACE_TAG || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_delete_nstag(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+
+    if (cmd->opcode != AON_ADM_CMD_DELETE_NAMESPACE_TAG || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    LOG_NORM("%s(): called", __func__);
+    return 0;
+}
+

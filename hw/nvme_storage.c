@@ -6,6 +6,7 @@
  *    Krzysztof Wierzbicki <krzysztof.wierzbicki@intel.com>
  *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
+ *    Keith Busch <keith.busch@intel.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -120,15 +121,14 @@ static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,
     Arguments    :    NVMEState * : Pointer to NVME device State
                       struct NVME_rw * : NVME IO command
 *********************************************************************/
-static void update_ns_util(NVMEState *n, struct NVME_rw *e)
+static void update_ns_util(DiskInfo *disk, struct NVME_rw *e)
 {
     uint64_t index;
-    DiskInfo *disk = &n->disk[e->nsid - 1];
 
     /* Update the namespace utilization */
     for (index = e->slba; index <= e->nlb + e->slba; index++) {
         if (!((disk->ns_util[index / 8]) & (1 << (index % 8)))) {
-            (disk->ns_util[(index / 8)]) |= (1 << (index % 8));
+            disk->ns_util[(index / 8)] |= (1 << (index % 8));
             disk->idtfy_ns->nuse++;
         }
     }
@@ -158,30 +158,33 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
         LOG_NORM("%s():Wrong IO opcode:\t\t0x%02x", __func__, sqe->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         goto exit;
-    } else if (e->nsid == 0 || (e->nsid > n->idtfy_ctrl->nn)) {
+    } else if (e->nsid == 0 || (e->nsid > n->num_namespaces) ||
+            n->disk[e->nsid - 1] == NULL) {
         /* Check for valid values of namespace ID for IO R/W */
         LOG_NORM("%s(): Invalid Namespace ID", __func__);
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         goto exit;
-    } else if ((e->slba + e->nlb) >= n->disk[(e->nsid - 1)].idtfy_ns->nsze) {
+    }
+
+    disk = n->disk[e->nsid - 1];
+    if ((e->slba + e->nlb) >= disk->idtfy_ns->nsze) {
         LOG_NORM("%s(): LBA out of range", __func__);
         sf->sc = NVME_SC_LBA_RANGE;
         goto exit;
-    } else if ((e->slba + e->nlb) >= n->disk[(e->nsid - 1)].idtfy_ns->ncap) {
+    } else if ((e->slba + e->nlb) >= disk->idtfy_ns->ncap) {
         LOG_NORM("%s():Capacity Exceeded", __func__);
         sf->sc = NVME_SC_CAP_EXCEEDED;
         goto exit;
     }
-    disk = &n->disk[(e->nsid - 1)];
 
     /* Read in the command */
-    nvme_blk_sz = NVME_BLOCK_SIZE(n->disk[(e->nsid - 1)].
-        idtfy_ns->lbafx[n->disk[(e->nsid - 1)].idtfy_ns->flbas].lbads);
+    nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns->lbafx[
+        disk->idtfy_ns->flbas].lbads);
     LOG_DBG("NVME Block size: %u", nvme_blk_sz);
     data_size = (e->nlb + 1) * nvme_blk_sz;
 
     file_offset = e->slba * nvme_blk_sz;
-    mapping_addr = n->disk[(e->nsid - 1)].mapping_addr;
+    mapping_addr = disk->mapping_addr;
 
     /* Namespace not ready */
     if (mapping_addr == NULL) {
@@ -214,7 +217,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 
 ns_utl:
     if (e->opcode == NVME_CMD_WRITE) {
-        update_ns_util(n, e);
+        update_ns_util(disk, e);
         if (++disk->host_write_commands[0] == 0) {
             ++disk->host_write_commands[1];
         }
@@ -247,86 +250,90 @@ exit:
                       namespaces within
     Return Type  :    int (0:1 Success:Failure)
 
-    Arguments    :    NVMEState * : Pointer to NVME device State
-                      uint32_t : Disk number
+    Arguments    :    uint32_t : instance number of the nvme device
+                      uint32_t : namespace id
+                      DiskInfo * : NVME disk to create storage for
 *********************************************************************/
-int nvme_create_storage_disk(NVMEState *n , uint32_t disk_num)
+int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk)
 {
-    uint32_t i;
-    /* Assuming 1 digit (base 10) for namespace number */
-    int size = 20, num, ret = SUCCESS;
-    char *str, *temp_str;
-    /* Assuming 64KB as maximum bloack size */
+    /* Assuming 64KB as maximum block size */
     uint16_t nvme_blk_sz;
+    char str[64];
 
-    str = malloc(size);
-    if (str == NULL) {
-        LOG_ERR("Not enough memory for namespace name");
+    snprintf(str, sizeof(str), "nvme_disk%d_n%d.img", instance, nsid);
+    disk->nsid = nsid;
+
+    disk->fd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    if (disk->fd < 0) {
+        LOG_ERR("Error while creating the storage");
         return FAIL;
     }
 
-    for (i = 0; i < n->num_namespaces; i++) {
+    nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns->
+        lbafx[disk->idtfy_ns->flbas].lbads);
 
-        /* Will auto adjust the size if number of namespace increases
-         * to multiple digits */
-        while (1) {
-            num = snprintf(str, size, "nvme_disk%d_n%d.img", disk_num, i+1);
-            /* If that worked, return the string. */
-            if (num > -1 && num < size) {
-                break;
-            }
-            /* Else try again with more space. */
-            if (num > -1) { /* glibc 2.1 */
-                size = num+1; /* precisely what is needed */
-            } else {           /* glibc 2.0 */
-                size *= 2;  /* twice the old size */
-            }
-            temp_str = realloc(str, size);
-            if (temp_str == NULL) {
-                LOG_ERR("Error while creating the storage");
-                ret = FAIL;
-                goto exit;
-            } else {
-              str = temp_str;
-            }
-        }
-        n->disk[i].fd = open(str, O_RDWR |
-                    O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-        if (n->disk[i].fd < 0) {
-            LOG_ERR("Error while creating the storage");
-            ret = FAIL;
-            goto exit;
-        }
-        nvme_blk_sz = NVME_BLOCK_SIZE(n->disk[i].
-                idtfy_ns->lbafx[n->disk[i].idtfy_ns->flbas].lbads);
-
-        if (posix_fallocate(n->disk[i].fd, 0,
-            n->disk[i].idtfy_ns->ncap * nvme_blk_sz) != 0) {
-            LOG_ERR("Error while allocating space for namespace");
-            ret = FAIL;
-            goto exit;
-        }
-
-        n->disk[i].mapping_addr = NULL;
-        n->disk[i].mapping_size = 0;
+    if (posix_fallocate(disk->fd, 0, disk->idtfy_ns->ncap *
+            nvme_blk_sz) != 0) {
+        LOG_ERR("Error while allocating space for namespace");
+        return FAIL;
     }
 
-    LOG_NORM("%s():Backing store created with disk number %d", __func__,
-        disk_num);
-exit:
-    free(str);
+    disk->mapping_addr = NULL;
+    disk->mapping_size = 0;
+
+    return SUCCESS;
+}
+
+/*********************************************************************
+    Function     :    nvme_create_storage_disks
+    Description  :    Creates a NVME Storage Disks and the
+                      namespaces within
+    Return Type  :    int (0:1 Success:Failure)
+
+    Arguments    :    NVMEState * : Pointer to NVME device State
+*********************************************************************/
+int nvme_create_storage_disks(NVMEState *n)
+{
+    uint32_t i;
+    int ret = SUCCESS;
+
+    for (i = 0; i < n->num_namespaces; i++) {
+        if (n->disk[i] == NULL) {
+            continue;
+        }
+        ret = nvme_create_storage_disk(n->instance, i + 1, n->disk[i]);
+    }
+
+    LOG_NORM("%s():Backing store created for instance %d", __func__,
+        n->instance);
+
     return ret;
 }
 
 /*********************************************************************
     Function     :    nvme_del_storage_disk
-    Description  :    Deletes a NVME Storage Disk
+    Description  :    Delete the NVME Storage Disk
+    Return Type  :    int (0:1 Success:Failure)
+
+    Arguments    :    DiskInfo * : Pointer to NVME disk
+*********************************************************************/
+int nvme_del_storage_disk(DiskInfo *disk)
+{
+    if (close(disk->fd) < 0) {
+        LOG_ERR("Unable to close the nvme disk");
+        return FAIL;
+    }
+    return SUCCESS;
+}
+
+/*********************************************************************
+    Function     :    nvme_del_storage_disks
+    Description  :    Deletes all NVME Storage Disks
     Return Type  :    int (0:1 Success:Failure)
 
     Arguments    :    NVMEState * : Pointer to NVME device State
-                      uint32_t : Disk number
 *********************************************************************/
-int nvme_del_storage_disk(NVMEState *n , uint32_t disk_num)
+int nvme_del_storage_disks(NVMEState *n)
 {
     uint32_t i;
     int ret = SUCCESS;
@@ -334,69 +341,103 @@ int nvme_del_storage_disk(NVMEState *n , uint32_t disk_num)
     /* If required do ftruncate to remove the allocated
      * memory using posix_fallocate */
     for (i = 0; i < n->num_namespaces; i++) {
-        if (close(n->disk[i].fd) < 0) {
-            ret = FAIL;
-            LOG_ERR("Unable to close the nvme disk");
+        if (n->disk[i] == NULL) {
+            continue;
         }
+        ret = nvme_del_storage_disk(n->disk[i]);
     }
     return ret;
 }
 
 /*********************************************************************
-    Function     :    nvme_close_storage_disk
-    Description  :    Closes the NVME Storage Disk and the
+    Function     :    nvme_del_storage_disk
+    Description  :    Deletes NVME Storage Disk
+    Return Type  :    int (0:1 Success:Failure)
+
+    Arguments    :    DiskInfo * : Pointer to NVME disk
+*********************************************************************/
+int nvme_close_storage_disk(DiskInfo *disk)
+{
+    if (disk->mapping_addr != NULL) {
+        if (munmap(disk->mapping_addr, disk->mapping_size) < 0) {
+            LOG_ERR("Error while closing namespace: %d", disk->nsid);
+            return FAIL;
+        } else {
+            disk->mapping_addr = NULL;
+            disk->mapping_size = 0;
+        }
+    }
+    return SUCCESS;
+}
+
+/*********************************************************************
+    Function     :    nvme_close_storage_disks
+    Description  :    Closes the NVME Storage Disks and the
                       associated namespaces
     Return Type  :    int (0:1 Success:Failure)
 
     Arguments    :    NVMEState * : Pointer to NVME device State
 *********************************************************************/
-int nvme_close_storage_disk(NVMEState *n)
+int nvme_close_storage_disks(NVMEState *n)
 {
     uint32_t i;
     int ret = SUCCESS;
 
     for (i = 0; i < n->num_namespaces; i++) {
-        if (n->disk[i].mapping_addr != NULL) {
-            if (munmap(n->disk[i].mapping_addr, n->disk[i].mapping_size) < 0) {
-                ret = FAIL;
-                LOG_ERR("Error while closing namespace: %d", i+1);
-            } else {
-                n->disk[i].mapping_addr = NULL;
-                n->disk[i].mapping_size = 0;
-            }
+        if (n->disk[i] == NULL) {
+            continue;
         }
+        ret = nvme_close_storage_disk(n->disk[i]);
     }
     return ret;
 }
 
 /*********************************************************************
     Function     :    nvme_open_storage_disk
-    Description  :    Opens the NVME Storage Disk and the
+    Description  :    Opens the NVME Storage Disk and its namespace
+    Return Type  :    int (0:1 Success:Failure)
+
+    Arguments    :    DiskInfo * : Pointer to NVME device State
+*********************************************************************/
+int nvme_open_storage_disk(DiskInfo *disk)
+{
+    uint16_t nvme_blk_sz;
+    if (disk->mapping_addr == NULL) {
+        nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns->lbafx[
+            disk->idtfy_ns->flbas].lbads);
+
+        disk->mapping_addr = mmap(NULL, disk->idtfy_ns->ncap * nvme_blk_sz,
+            PROT_READ | PROT_WRITE, MAP_SHARED, disk->fd, 0);
+
+        if (disk->mapping_addr == NULL) {
+            LOG_ERR("Error while opening namespace: %d", disk->nsid);
+            return FAIL;
+        }
+
+        disk->mapping_size = disk->idtfy_ns->ncap * nvme_blk_sz;
+    }
+    return SUCCESS;
+}
+
+/*********************************************************************
+    Function     :    nvme_open_storage_disks
+    Description  :    Opens the NVME Storage Disks and the
                       namespaces within for usage
     Return Type  :    int (0:1 Success:Failure)
 
     Arguments    :    NVMEState * : Pointer to NVME device State
 *********************************************************************/
-int nvme_open_storage_disk(NVMEState *n)
+int nvme_open_storage_disks(NVMEState *n)
 {
     uint32_t i;
     int ret = SUCCESS;
-    uint16_t nvme_blk_sz;
 
     for (i = 0; i < n->num_namespaces; i++) {
-        if (n->disk[i].mapping_addr == NULL) {
-            nvme_blk_sz = NVME_BLOCK_SIZE(n->disk[i].
-                idtfy_ns->lbafx[n->disk[i].idtfy_ns->flbas].lbads);
-            n->disk[i].mapping_addr = mmap(NULL,
-                n->disk[i].idtfy_ns->ncap * nvme_blk_sz,
-                    PROT_READ | PROT_WRITE, MAP_SHARED, n->disk[i].fd, 0);
-
-            if (n->disk[i].mapping_addr == NULL) {
-                ret = FAIL;
-                LOG_ERR("Error while opening namespace: %d", i+1);
-            }
-            n->disk[i].mapping_size = n->disk[i].idtfy_ns->ncap * nvme_blk_sz;
+        if (n->disk[i] == NULL) {
+            continue;
         }
+        ret = nvme_open_storage_disk(n->disk[i]);
     }
     return ret;
 }
+

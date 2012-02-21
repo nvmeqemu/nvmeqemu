@@ -299,8 +299,8 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
             break;
         case NVME_AQA:
             nvme_cntrl_write_config(nvme_dev, NVME_AQA, val, DWORD);
-            nvme_dev->sq[ASQ_ID].size = val & 0xfff;
-            nvme_dev->cq[ACQ_ID].size = (val >> 16) & 0xfff;
+            nvme_dev->sq[ASQ_ID].size = (val & 0xfff) + 1;
+            nvme_dev->cq[ACQ_ID].size = ((val >> 16) & 0xfff) + 1;
             break;
         case NVME_ASQ:
             nvme_cntrl_write_config(nvme_dev, NVME_ASQ, val, DWORD);
@@ -686,8 +686,8 @@ static void clear_nvme_device(NVMEState *n)
         (uint32_t) (n->aqstate.acqa >> 32), DWORD);
     n->sq[ASQ_ID].dma_addr = n->aqstate.asqa;
     n->cq[ACQ_ID].dma_addr = n->aqstate.acqa;
-    n->sq[ASQ_ID].size = n->aqstate.aqa & 0xfff;
-    n->cq[ACQ_ID].size = (n->aqstate.aqa >> 16) & 0xfff;
+    n->sq[ASQ_ID].size = (n->aqstate.aqa & 0xfff) + 1;
+    n->cq[ACQ_ID].size = ((n->aqstate.aqa >> 16) & 0xfff) + 1;
 
 }
 

@@ -34,13 +34,13 @@ static uint8_t is_cq_full(NVMEState *n, uint16_t qid)
 
 static void incr_sq_head(NVMEIOSQueue *q)
 {
-    q->head = (q->head + 1) % (q->size + 1);
+    q->head = (q->head + 1) % q->size;
 }
 
 static void incr_cq_tail(NVMEIOCQueue *q)
 {
     q->tail = q->tail + 1;
-    if (q->tail > q->size) {
+    if (q->tail >= q->size) {
         q->tail = 0;
         q->phase_tag = !q->phase_tag;
     }

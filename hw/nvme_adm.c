@@ -100,9 +100,8 @@ uint8_t nvme_admin_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
     return ret;
 }
 
-static uint32_t adm_check_cqid(NVMEState *n, uint16_t cqid)
+uint32_t adm_check_cqid(NVMEState *n, uint16_t cqid)
 {
-    LOG_NORM("kw q: check if exists cqid %d", cqid);
     /* If queue is allocated dma_addr!=NULL and has the same ID */
     if (cqid >= NVME_MAX_QID) {
         return FAIL;
@@ -113,7 +112,7 @@ static uint32_t adm_check_cqid(NVMEState *n, uint16_t cqid)
     }
 }
 
-static uint32_t adm_check_sqid(NVMEState *n, uint16_t sqid)
+uint32_t adm_check_sqid(NVMEState *n, uint16_t sqid)
 {
     /* If queue is allocated dma_addr!=NULL and has the same ID */
     if (sqid >= NVME_MAX_QID) {
@@ -575,11 +574,19 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     }
 
     /* just make up a temperature. 0x143 Kelvin is 50 degrees C. */
-    smart_log.temperature[0] = 0x43;
-    smart_log.temperature[1] = 0x1;
+    smart_log.temperature[0] = NVME_TEMPERATURE & 0xff;
+    smart_log.temperature[1] = (NVME_TEMPERATURE >> 8) & 0xff;
 
     current_seconds = time(NULL);
     smart_log.power_on_hours[0] = ((current_seconds - n->start_time) / 60) / 60;
+
+    smart_log.available_spare_threshold = NVME_SPARE_THRESH;
+    if (smart_log.available_spare <= NVME_SPARE_THRESH) {
+        smart_log.critical_warning |= 1 << 0;
+    }
+    if (n->feature.temperature_threshold <= NVME_TEMPERATURE) {
+        smart_log.critical_warning |= 1 << 1;
+    }
 
     len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), sizeof(smart_log));
     nvme_dma_mem_write(cmd->prp1, (uint8_t *)&smart_log, len);
@@ -844,6 +851,14 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     case NVME_FEATURE_TEMPERATURE_THRESHOLD:
         if (sqe->opcode == NVME_ADM_CMD_SET_FEATURES) {
             n->feature.temperature_threshold = sqe->cdw11;
+            if (n->feature.temperature_threshold <= NVME_TEMPERATURE &&
+                    !n->temp_warn_issued) {
+                LOG_NORM("Device:%d setting temp threshold feature to:%d",
+                    n->instance, n->feature.temperature_threshold);
+                n->temp_warn_issued = 1;
+                enqueue_async_event(n, event_type_smart,
+                    event_info_smart_temp_thresh, NVME_LOG_SMART_INFORMATION);
+            }
         } else {
             cqe->cmd_specific = n->feature.temperature_threshold;
         }
@@ -900,8 +915,7 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     case NVME_FEATURE_ASYNCHRONOUS_EVENT_CONF:
         if (sqe->opcode == NVME_ADM_CMD_SET_FEATURES) {
-            n->feature.asynchronous_event_configuration
-                                 = sqe->cdw11;
+            n->feature.asynchronous_event_configuration = sqe->cdw11;
         } else {
             cqe->cmd_specific =
                 n->feature.asynchronous_event_configuration;
@@ -958,6 +972,56 @@ static uint32_t adm_cmd_get_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     return res;
 }
 
+void async_process_cb(void *param)
+{
+    NVMECQE cqe;
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe.status;
+    NVMEState *n = (NVMEState *)param;
+    target_phys_addr_t addr;
+    AsyncResult *result;
+    AsyncEvent *event;
+
+    if (n->outstanding_asyncs <= 0) {
+        LOG_NORM("%s(): called without an outstanding async event", __func__);
+        return;
+    }
+    if (QSIMPLEQ_EMPTY(&n->async_queue)) {
+        LOG_NORM("%s(): called with no outstanding events to report", __func__);
+        return;
+    }
+
+    LOG_NORM("%s(): called outstanding asyncs:%d", __func__,
+        n->outstanding_asyncs);
+
+    while ((event = QSIMPLEQ_FIRST(&n->async_queue)) != NULL &&
+            n->outstanding_asyncs > 0) {
+        QSIMPLEQ_REMOVE_HEAD(&n->async_queue, entry);
+
+        result = (AsyncResult *)&cqe.cmd_specific;
+        result->event_type = event->result.event_type;
+        result->event_info = event->result.event_info;
+        result->log_page   = event->result.log_page;
+
+        qemu_free(event);
+
+        n->outstanding_asyncs--;
+
+        cqe.sq_id = 0;
+        cqe.sq_head = n->sq[0].head;
+        cqe.command_id = n->async_cid[n->outstanding_asyncs];
+
+        sf->sc = NVME_SC_SUCCESS;
+        sf->p = n->cq[0].phase_tag;
+        sf->m = 0;
+        sf->dnr = 0;
+
+        addr = n->cq[0].dma_addr + n->cq[0].tail * sizeof(cqe);
+        nvme_dma_mem_write(addr, (uint8_t *)&cqe, sizeof(cqe));
+        incr_cq_tail(&n->cq[0]);
+    }
+    msix_notify(&(n->dev), 0);
+}
+
 static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
@@ -969,7 +1033,19 @@ static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return FAIL;
     }
 
+    if (n->outstanding_asyncs > n->idtfy_ctrl->aerl) {
+        LOG_NORM("%s(): too many asyncs %d %d", __func__, n->outstanding_asyncs,
+            n->idtfy_ctrl->aerl);
+        sf->sc = NVME_ASYNC_EVENT_LIMIT_EXCEEDED;
+        return FAIL;
+    }
+
     LOG_NORM("%s(): called", __func__);
+
+    n->async_cid[n->outstanding_asyncs] = cmd->cid;
+    qemu_mod_timer(n->async_event_timer, qemu_get_clock_ns(vm_clock) + 10000);
+    n->outstanding_asyncs++;
+
     return 0;
 }
 
@@ -978,11 +1054,11 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     uint32_t dw10 = cmd->cdw10;
-    uint32_t nsid;
+    uint32_t nsid, block_size;
     DiskInfo *disk;
 
     sf->sc = NVME_SC_SUCCESS;
-    if (cmd->opcode != NVME_ADM_CMD_FORMAT_NVM || !n->use_aon) {
+    if (cmd->opcode != NVME_ADM_CMD_FORMAT_NVM) {
         LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
@@ -991,7 +1067,8 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     /* check for invalid settings */
     if (dw10 >> 4 & 0x1f) {
         /* meta-data or protection information set, not supported yet */
-        LOG_NORM("%s(): Invalid format %x", __func__, dw10);
+        LOG_NORM("%s(): Invalid format %x, meta-data specified", __func__,
+            dw10);
         sf->sc = NVME_INVALID_FORMAT;
         return FAIL;
     }
@@ -1009,9 +1086,19 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     }
 
     disk = n->disk[nsid - 1];
-    disk->idtfy_ns->flbas = (disk->idtfy_ns->flbas & ~(0xf)) | (dw10 & 0xf);
+    if ((dw10 & 0xf) > disk->idtfy_ns->nlbaf) {
+        LOG_NORM("%s(): Invalid format %x, lbaf out of range", __func__, dw10);
+        sf->sc = NVME_INVALID_FORMAT;
+        return FAIL;
+    }
 
     LOG_NORM("%s(): called", __func__);
+    block_size = 1 << disk->idtfy_ns->lbafx[disk->idtfy_ns->flbas & 0xf].lbads;
+    memset(disk->ns_util, 0, disk->idtfy_ns->nsze / (block_size + 7) / 8);
+    disk->thresh_warn_issued = 0;
+    disk->idtfy_ns->nuse = 0;
+    disk->idtfy_ns->flbas = (disk->idtfy_ns->flbas & ~(0xf)) | (dw10 & 0xf);
+
     return 0;
 }
 
@@ -1030,15 +1117,11 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
-
     if (cmd->prp1 == 0) {
         LOG_NORM("%s(): prp1 absent", __func__);
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
-
-    /* XXX: spec requires only one prp, forcing page alignment.
-     * Why not use two? */
     if (cmd->prp1 % PAGE_SIZE != 0) {
         LOG_NORM("%s(): prp1 not aligned", __func__);
         sf->sc = NVME_SC_INVALID_FIELD;
@@ -1075,7 +1158,6 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_AON_INVALID_NAMESPACE_SIZE;
         return FAIL;
     }
-
     if (ns.ncap != ns.nsze) {
         LOG_NORM("%s(): bad ncap", __func__);
         sf->sc = NVME_AON_INVALID_NAMESPACE_CAPACITY;
@@ -1138,8 +1220,10 @@ static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     clear_bit(nsid, n->nn_vector);
     n->idtfy_ctrl->nn = find_last_bit(n->nn_vector, n->num_namespaces + 2);
-    if(n->idtfy_ctrl->nn == n->num_namespaces + 2)
+    if (n->idtfy_ctrl->nn == n->num_namespaces + 2) {
+        /* deleted the last namespace */
         n->idtfy_ctrl->nn = 0;
+    }
     n->aon_ctrl_vs->tus += ns_bytes;
 
     nvme_close_storage_disk(disk);
@@ -1182,9 +1266,6 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }
-
-    /* XXX: spec requires only one prp, forcing page alignment.
-     * Why not use two? */
     if (cmd->prp1 % PAGE_SIZE != 0) {
         LOG_NORM("%s(): prp1 not aligned", __func__);
         sf->sc = NVME_SC_INVALID_FIELD;

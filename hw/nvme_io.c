@@ -37,7 +37,7 @@ static void incr_sq_head(NVMEIOSQueue *q)
     q->head = (q->head + 1) % q->size;
 }
 
-static void incr_cq_tail(NVMEIOCQueue *q)
+void incr_cq_tail(NVMEIOCQueue *q)
 {
     q->tail = q->tail + 1;
     if (q->tail >= q->size) {
@@ -140,6 +140,11 @@ void process_sq(NVMEState *n, uint16_t sq_id)
 
     if (sq_id == ASQ_ID) {
         nvme_admin_command(n, &sqe, &cqe);
+        if (sqe.opcode == NVME_ADM_CMD_ASYNC_EV_REQ &&
+            sf->sc == NVME_SC_SUCCESS) {
+            /* completion entry is done separately */
+            return;
+        }
     } else {
        /* TODO add support for IO commands with different sizes of Q elements */
         nvme_io_command(n, &sqe, &cqe);

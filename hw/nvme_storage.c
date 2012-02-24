@@ -217,7 +217,20 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 
 ns_utl:
     if (e->opcode == NVME_CMD_WRITE) {
+        uint64_t old_use = disk->idtfy_ns->nuse;
         update_ns_util(disk, e);
+
+        /* check if there needs to be an event issued */
+        if (old_use != disk->idtfy_ns->nuse && !disk->thresh_warn_issued &&
+                (100 - (uint32_t)((((double)disk->idtfy_ns->nuse) /
+                    disk->idtfy_ns->nsze) * 100) < NVME_SPARE_THRESH)) {
+            LOG_NORM("Device:%d nsid:%d, setting threshold warning",
+                n->instance, disk->nsid);
+            disk->thresh_warn_issued = 1;
+            enqueue_async_event(n, event_type_smart,
+                event_info_smart_spare_thresh, NVME_LOG_SMART_INFORMATION);
+        }
+
         if (++disk->host_write_commands[0] == 0) {
             ++disk->host_write_commands[1];
         }

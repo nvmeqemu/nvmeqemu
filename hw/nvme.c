@@ -46,6 +46,22 @@ static void read_file(NVMEState *, uint8_t);
 static void sq_processing_timer_cb(void *);
 static int nvme_irqcq_empty(NVMEState *, uint32_t);
 static void msix_clr_pending(PCIDevice *, uint32_t);
+
+void enqueue_async_event(NVMEState *n, uint8_t event_type, uint8_t event_info,
+    uint8_t log_page)
+{
+    AsyncEvent *event = (AsyncEvent *)qemu_malloc(sizeof(AsyncEvent));
+
+    event->result.event_type = event_type;
+    event->result.event_info = event_info;
+    event->result.log_page   = log_page;
+
+    QSIMPLEQ_INSERT_TAIL(&(n->async_queue), event, entry);
+
+    qemu_mod_timer(n->async_event_timer,
+            qemu_get_clock_ns(vm_clock) + 20000);
+}
+
 /*********************************************************************
     Function     :    process_doorbell
     Description  :    Processing Doorbell and SQ commands
@@ -71,8 +87,10 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
     if (queue_id % 2) {
         /* CQ */
         queue_id = (addr - NVME_CQ0HDBL) / QUEUE_BASE_ADDRESS_WIDTH;
-        if (queue_id > NVME_MAX_QID) {
+        if (adm_check_cqid(nvme_dev, queue_id)) {
             LOG_NORM("Wrong CQ ID: %d", queue_id);
+            enqueue_async_event(nvme_dev, event_type_error,
+                event_info_err_invalid_sq, NVME_LOG_ERROR_INFORMATION);
             return;
         }
 
@@ -89,8 +107,10 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
     } else {
         /* SQ */
         queue_id = (addr - NVME_SQ0TDBL) / QUEUE_BASE_ADDRESS_WIDTH;
-        if (queue_id > NVME_MAX_QID) {
+        if (adm_check_sqid(nvme_dev, queue_id)) {
             LOG_NORM("Wrong SQ ID: %d", queue_id);
+            enqueue_async_event(nvme_dev, event_type_error,
+                event_info_err_invalid_sq, NVME_LOG_ERROR_INFORMATION);
             return;
         }
         nvme_dev->sq[queue_id].tail = val & 0xffff;
@@ -717,6 +737,11 @@ static void clear_nvme_device(NVMEState *n)
     n->sq[ASQ_ID].size = (n->aqstate.aqa & 0xfff) + 1;
     n->cq[ACQ_ID].size = ((n->aqstate.aqa >> 16) & 0xfff) + 1;
 
+    n->outstanding_asyncs = 0;
+    n->feature.temperature_threshold = NVME_TEMPERATURE + 10;
+    n->temp_warn_issued = 0;
+
+    QSIMPLEQ_INIT(&n->async_queue);
 }
 
 /*********************************************************************
@@ -959,9 +984,9 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     n->instance = instance++;
     n->disk = (DiskInfo **)qemu_mallocz(sizeof(DiskInfo *)*n->num_namespaces);
 
-    n->nn_vector_size = (n->num_namespaces + sizeof(unsigned long) - 1) /
+    n->nn_vector_size = (n->num_namespaces + sizeof(unsigned long)-1) /
         sizeof(unsigned long);
-    n->nn_vector = qemu_mallocz(sizeof(unsigned long) * n->nn_vector_size);
+    n->nn_vector = qemu_mallocz(sizeof(unsigned long)*n->nn_vector_size);
 
     /* Zero out the Queue Datastructures */
     memset(n->cq, 0, sizeof(NVMEIOCQueue) * NVME_MAX_QID);
@@ -1026,6 +1051,12 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     n->feature.number_of_queues = ((NVME_MAX_QID - 1) << 16)
         | (NVME_MAX_QID - 1);
 
+    /* Defaulting the temperature threshold, 60 C */
+    n->feature.temperature_threshold = NVME_TEMPERATURE + 10;
+
+    /* Defaulting the async notification to all temperature and threshold */
+    n->feature.asynchronous_event_configuration = 0x3;
+
     for (ret = 0; ret < n->nvectors; ret++) {
         msix_vector_use(&n->dev, ret);
     }
@@ -1046,6 +1077,12 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     }
     n->sq_processing_timer = qemu_new_timer_ns(vm_clock,
         sq_processing_timer_cb, n);
+
+    n->outstanding_asyncs = 0;
+    n->async_event_timer = qemu_new_timer_ns(vm_clock,
+        async_process_cb, n);
+
+    QSIMPLEQ_INIT(&n->async_queue);
 
     return 0;
 }

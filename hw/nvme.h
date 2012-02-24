@@ -5,6 +5,7 @@
 #include "hw.h"
 #include "pci.h"
 #include "qemu-timer.h"
+#include "qemu-queue.h"
 #include "loader.h"
 #include "sysemu.h"
 #include "msix.h"
@@ -87,11 +88,14 @@
 /* Definitions regarding  Identify Namespace Datastructure */
 #define NO_POWER_STATE_SUPPORT 2 /* 0 BASED */
 #define NVME_ABORT_COMMAND_LIMIT 10 /* 0 BASED */
-#define ASYNC_EVENT_REQ_LIMIT 4 /* 0 BASED */
+#define ASYNC_EVENT_REQ_LIMIT 3 /* 0 BASED */
 
 /* Definitions regarding  Identify Controller Datastructure */
 #define NO_LBA_FORMATS 15 /* 0 BASED */
 #define LBA_FORMAT_INUSE 0 /* 0 BASED */
+
+#define NVME_SPARE_THRESH 20
+#define NVME_TEMPERATURE 0x143
 
 enum {
     NVME_COMMAND_SET = 0x0,
@@ -403,6 +407,19 @@ typedef struct NVMEIdentifyNamespace {
     uint8_t  vs[3712];  /* [384-4095] Vendor Specific */
 } NVMEIdentifyNamespace;
 
+typedef struct AsyncResult {
+    uint8_t event_type;
+    uint8_t event_info;
+    uint8_t log_page;
+    uint8_t resv;
+} AsyncResult;
+
+typedef struct AsyncEvent {
+    QSIMPLEQ_ENTRY(AsyncEvent) entry;
+    AsyncResult result;
+} AsyncEvent;
+
+
 typedef struct DiskInfo {
     int fd;
     int nsid;
@@ -412,6 +429,7 @@ typedef struct DiskInfo {
     NVMEIdentifyNamespace *idtfy_ns;
     /* Namespace utilization bitmasks (rounded off) */
     uint8_t *ns_util;
+    uint8_t thresh_warn_issued;
 
     uint32_t write_data_counter;
     uint32_t read_data_counter;
@@ -482,6 +500,14 @@ typedef struct NVMEState {
     AONIdCtrlVs *aon_ctrl_vs;
 
     uint8_t use_aon; /* flag if aon is enabled */
+    uint8_t temp_warn_issued;
+
+    QEMUTimer *async_event_timer;
+
+    uint16_t async_cid[ASYNC_EVENT_REQ_LIMIT + 1];
+    uint16_t outstanding_asyncs;
+
+    QSIMPLEQ_HEAD(async_queue, AsyncEvent) async_queue;
 
     unsigned long *nn_vector;
     unsigned long nn_vector_size;
@@ -817,6 +843,19 @@ typedef struct NVMEAdmCmdAbort {
     uint32_t cdw15;
 } NVMEAdmCmdAbort;
 
+enum {
+    event_type_error = 0,
+    event_type_smart = 1,
+    event_info_err_invalid_sq = 0,
+    event_info_err_invalid_db = 1,
+    event_info_err_diag_fail  = 2,
+    event_info_err_pers_internal_err = 3,
+    event_info_err_trans_internal_err = 4,
+    event_info_err_fw_img_load_err = 5,
+    event_info_smart_reliability = 0,
+    event_info_smart_temp_thresh = 1,
+    event_info_smart_spare_thresh = 2
+};
 
 typedef struct NVMEAdmCmdAsyncEvRq {
     uint32_t opcode:8;
@@ -1046,6 +1085,11 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk);
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len);
 void nvme_dma_mem_write(target_phys_addr_t addr, uint8_t *buf, int len);
 void process_sq(NVMEState *n, uint16_t sq_id);
+void async_process_cb(void *);
+void incr_cq_tail(NVMEIOCQueue *q);
+
+uint32_t adm_check_cqid(NVMEState *n, uint16_t cqid);
+uint32_t adm_check_sqid(NVMEState *n, uint16_t sqid);
 
 /* Config file read functions */
 int read_config_file(FILE *, NVMEState *, uint8_t);
@@ -1057,5 +1101,8 @@ uint32_t nvme_cntrl_read_config(NVMEState *,
     target_phys_addr_t, uint8_t);
 void nvme_cntrl_write_config(NVMEState *,
     target_phys_addr_t, uint32_t, uint8_t);
+
+void enqueue_async_event(NVMEState *n, uint8_t event_type, uint8_t event_info,
+    uint8_t log_page);
 
 #endif /* NVME_H_ */

@@ -72,7 +72,7 @@ static uint32_t adm_check_cqid(NVMEState *n, uint16_t cqid)
 {
     LOG_NORM("kw q: check if exists cqid %d", cqid);
     /* If queue is allocated dma_addr!=NULL and has the same ID */
-    if (cqid >= NVME_MAX_QID) {
+    if (cqid > NVME_MAX_QID) {
         return FAIL;
     } else if (n->cq[cqid].dma_addr && n->cq[cqid].id == cqid) {
         return 0;
@@ -84,7 +84,7 @@ static uint32_t adm_check_cqid(NVMEState *n, uint16_t cqid)
 static uint32_t adm_check_sqid(NVMEState *n, uint16_t sqid)
 {
     /* If queue is allocated dma_addr!=NULL and has the same ID */
-    if (sqid >= NVME_MAX_QID) {
+    if (sqid > NVME_MAX_QID) {
         return FAIL;
     } else if (n->sq[sqid].dma_addr && n->sq[sqid].id == sqid) {
         return 0;
@@ -95,23 +95,23 @@ static uint32_t adm_check_sqid(NVMEState *n, uint16_t sqid)
 
 static uint16_t adm_get_sq(NVMEState *n, uint16_t sqid)
 {
-    if (sqid >= NVME_MAX_QID) {
-        return NVME_MAX_QID;
+    if (sqid > NVME_MAX_QID) {
+        return USHRT_MAX;
     } else if (n->sq[sqid].dma_addr && n->sq[sqid].id == sqid) {
         return sqid;
     } else {
-        return NVME_MAX_QID;
+        return USHRT_MAX;
     }
 }
 
 static uint16_t adm_get_cq(NVMEState *n, uint16_t cqid)
 {
-    if (cqid >= NVME_MAX_QID) {
-        return NVME_MAX_QID;
+    if (cqid > NVME_MAX_QID) {
+        return USHRT_MAX;
     } else if (n->cq[cqid].dma_addr && n->cq[cqid].id == cqid) {
         return cqid;
     } else {
-        return NVME_MAX_QID;
+        return USHRT_MAX;
     }
 
 }
@@ -153,7 +153,7 @@ static uint32_t adm_cmd_del_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     }
 
     i = adm_get_sq(n, c->qid);
-    if (i == NVME_MAX_QID) {
+    if (i == USHRT_MAX) {
         LOG_NORM("No such queue: SQ %d", c->qid);
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
@@ -164,9 +164,9 @@ static uint32_t adm_cmd_del_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         /* Queue not empty */
     }
 
-    if (sq->cq_id != NVME_MAX_QID) {
+    if (sq->cq_id <= NVME_MAX_QID) {
         cq = &n->cq[sq->cq_id];
-        if (cq->id == NVME_MAX_QID) {
+        if (cq->id > NVME_MAX_QID) {
             /* error */
             sf->sct = NVME_SCT_CMD_SPEC_ERR;
             sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
@@ -180,7 +180,7 @@ static uint32_t adm_cmd_del_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         cq->usage_cnt--;
     }
 
-    sq->id = sq->cq_id = NVME_MAX_QID;
+    sq->id = sq->cq_id = USHRT_MAX;
     sq->head = sq->tail = 0;
     sq->size = 0;
     sq->prio = 0;
@@ -219,7 +219,7 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_DBG("Create SQ command with PRP2: %lu", c->prp2);
     LOG_DBG("Create SQ command is assoc with CQID: %u", c->cqid);
 
-    if (c->qid == 0 || c->qid >= NVME_MAX_QID) {
+    if (c->qid == 0 || c->qid > NVME_MAX_QID) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
         LOG_NORM("%s():NVME_INVALID_QUEUE_IDENTIFIER in Command", __func__);
@@ -327,7 +327,7 @@ static uint32_t adm_cmd_del_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
 
     i = adm_get_cq(n, c->qid);
-    if (i == NVME_MAX_QID) {
+    if (i == USHRT_MAX) {
         LOG_NORM("No such queue: CQ %d", c->qid);
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
@@ -347,7 +347,7 @@ static uint32_t adm_cmd_del_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return NVME_SC_INVALID_FIELD;
     }
 
-    cq->id = NVME_MAX_QID;
+    cq->id = USHRT_MAX;
     cq->head = cq->tail = 0;
     cq->size = 0;
     cq->irq_enabled = 0;
@@ -385,7 +385,7 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return FAIL;
     }
 
-    if (c->qid == 0 || c->qid >= NVME_MAX_QID) {
+    if (c->qid == 0 || c->qid > NVME_MAX_QID) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
         LOG_NORM("%s():NVME_INVALID_QUEUE_IDENTIFIER in Command", __func__);
@@ -692,7 +692,7 @@ static uint32_t adm_cmd_abort(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return FAIL;
     }
 
-    if (c->sqid >= NVME_MAX_QID) {
+    if (c->sqid > NVME_MAX_QID) {
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
@@ -707,7 +707,7 @@ static uint32_t adm_cmd_abort(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     }
 
     i = adm_get_sq(n, c->sqid);
-    if (i == NVME_MAX_QID) {
+    if (i == USHRT_MAX) {
         /* Failed - no SQ found*/
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_REQ_CMD_TO_ABORT_NOT_FOUND;

@@ -16,6 +16,8 @@
 #define min(x, y) ((x) < (y) ? (x) : (y))
 #endif
 
+#define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
+
 /* Config FIlE names */
 #define NVME_CONFIG_FILE "NVME_device_NVME_config"
 #define PCI_CONFIG_FILE "NVME_device_PCI_config"
@@ -214,7 +216,6 @@ typedef struct NVMEIOSQueue {
     uint32_t abort_cmd_id[NVME_ABORT_COMMAND_LIMIT];
 } NVMEIOSQueue;
 
-struct NVMECQE;
 typedef struct NVMEIOCQueue {
     uint16_t id;
     uint16_t usage_cnt; /* how many sq is linked */
@@ -377,7 +378,7 @@ typedef struct NVMEIdentifyPowerDesc {
     uint8_t  res3:3;    /* [117-119] Reserved */
     uint8_t  rwl:5;     /* [120-124] Relative Write Latency */
     uint8_t  res4:3;    /* [125-127] Reserved */
-    uint8_t  res5[128]; /* [128-255] Reserved */
+    uint8_t  res5[16];  /* [128-255] Reserved */
 } NVMEIdentifyPowerDesc;
 
 

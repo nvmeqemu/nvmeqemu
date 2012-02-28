@@ -1147,6 +1147,32 @@ static PCIDeviceInfo nvme_info = {
     }
 };
 
+static inline void _nvme_check_size(void)
+{
+    BUILD_BUG_ON(sizeof(NVMEIdentifyController) != 4096);
+    BUILD_BUG_ON(sizeof(NVMEIdentifyNamespace) != 4096);
+    BUILD_BUG_ON(sizeof(NVMESmartLog) != 512);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdFeatures) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdDeleteSQ) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdCreateSQ) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdGetLogPage) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdDeleteCQ) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdCreateCQ) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdIdentify) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdAbort) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdAsyncEvRq) != 64);
+    BUILD_BUG_ON(sizeof(NVMECmd) != 64);
+    BUILD_BUG_ON(sizeof(NVMECmdRead) != 64);
+    BUILD_BUG_ON(sizeof(NVMECmdWrite) != 64);
+    BUILD_BUG_ON(sizeof(NVMEIdentifyPowerDesc) != 32);
+    BUILD_BUG_ON(sizeof(NVMECQE) != 16);
+    BUILD_BUG_ON(sizeof(NVMECtrlCap) != 8);
+    BUILD_BUG_ON(sizeof(NVMECtrlConf) != 8);
+    BUILD_BUG_ON(sizeof(NVMEVersion) != 4);
+    BUILD_BUG_ON(sizeof(NVMECtrlStatus) != 4);
+    BUILD_BUG_ON(sizeof(NVMEStatusField) != 2);
+}
+
 /*********************************************************************
     Function     :    nvme_register_devices
     Description  :    Registering the NVME Device with Qemu

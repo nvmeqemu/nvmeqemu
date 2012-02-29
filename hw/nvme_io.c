@@ -35,6 +35,8 @@ static uint8_t is_cq_full(NVMEState *n, uint16_t qid)
 static void incr_sq_head(NVMEIOSQueue *q)
 {
     q->head = (q->head + 1) % q->size;
+    LOG_DBG("%s(): (SQID, HD, SZ) = (%d, %d, %d)", __func__,
+        q->id, q->head, q->size);
 }
 
 void incr_cq_tail(NVMEIOCQueue *q)

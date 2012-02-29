@@ -156,7 +156,7 @@ static void msix_clr_pending(PCIDevice *dev, uint32_t vector)
 static int nvme_irqcq_empty(NVMEState *nvme_dev, uint32_t vector)
 {
     int index, ret_val = FAIL;
-    for (index = 0; index < NVME_MAX_QID; index++) {
+    for (index = 0; index < NVME_MAX_QS_ALLOCATED; index++) {
         if (nvme_dev->cq[index].vector == vector &&
             nvme_dev->cq[index].irq_enabled) {
             if (nvme_dev->cq[index].head != nvme_dev->cq[index].tail) {
@@ -181,7 +181,7 @@ static void sq_processing_timer_cb(void *param)
      * coz if one Q blocks for wahtever reason (CQ full)..remaining
      * Queues having valid data won't be processed
      */
-    for (sq_id = 0; sq_id < NVME_MAX_QID; sq_id++) {
+    for (sq_id = 0; sq_id < NVME_MAX_QS_ALLOCATED; sq_id++) {
         while (n->sq[sq_id].head != n->sq[sq_id].tail) {
             /* Handle one SQ entry */
             process_sq(n, sq_id);
@@ -719,7 +719,7 @@ static void clear_nvme_device(NVMEState *n)
     read_file(n, NVME_SPACE);
     n->intr_vect = 0;
 
-    for (i = 0; i < NVME_MAX_QID; i++) {
+    for (i = 0; i < NVME_MAX_QS_ALLOCATED; i++) {
         memset(&(n->sq[i]), 0, sizeof(NVMEIOSQueue));
         memset(&(n->cq[i]), 0, sizeof(NVMEIOCQueue));
     }
@@ -989,8 +989,8 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     n->nn_vector = qemu_mallocz(sizeof(unsigned long)*n->nn_vector_size);
 
     /* Zero out the Queue Datastructures */
-    memset(n->cq, 0, sizeof(NVMEIOCQueue) * NVME_MAX_QID);
-    memset(n->sq, 0, sizeof(NVMEIOSQueue) * NVME_MAX_QID);
+    memset(n->cq, 0, sizeof(NVMEIOCQueue) * NVME_MAX_QS_ALLOCATED);
+    memset(n->sq, 0, sizeof(NVMEIOSQueue) * NVME_MAX_QS_ALLOCATED);
 
     /* TODO: pci_conf = n->dev.config; */
     n->nvectors = NVME_MSIX_NVECTORS;
@@ -1048,6 +1048,7 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     read_file(n, NVME_SPACE);
 
     /* Defaulting the number of Queues */
+    /* Indicates the number of I/O Q's allocated. This is 0's based value. */
     n->feature.number_of_queues = ((NVME_MAX_QID - 1) << 16)
         | (NVME_MAX_QID - 1);
 

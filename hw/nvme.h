@@ -68,7 +68,12 @@
 /* Size of NVME Controller Registers except the Doorbells */
 #define NVME_CNTRL_SIZE 0xfff
 
-#define NVME_MAX_QID 64
+/* Maximum Q's allocated for the controller including Admin Q */
+#define NVME_MAX_QS_ALLOCATED 64
+
+/* The Q ID starts from 0 for Admin Q and ends at
+ * NVME_MAX_QS_ALLOCATED minus 1 for IO Q's */
+#define NVME_MAX_QID (NVME_MAX_QS_ALLOCATED - 1)
 
 /* Size of PRP entry in bytes */
 #define PRP_ENTRY_SIZE 8
@@ -122,8 +127,8 @@ enum {
     NVME_SQ1TDBL   = 0x1008, /* SQ 1 Tail Doorbell, 32bit */
     NVME_CQ1HDBL   = 0x100c, /* CQ 1 Head Doorbell, 32bit */
 
-    NVME_SQMAXTDBL = (NVME_SQ0TDBL + 8*(NVME_MAX_QID - 1)),
-    NVME_CQMAXHDBL = (NVME_CQ0HDBL + 8*(NVME_MAX_QID - 1))
+    NVME_SQMAXTDBL = (NVME_SQ0TDBL + 8 * NVME_MAX_QID),
+    NVME_CQMAXHDBL = (NVME_CQ0HDBL + 8 * NVME_MAX_QID)
 };
 
 /* address for SQ ID. */
@@ -459,8 +464,8 @@ typedef struct NVMEState {
     struct nvme_features feature;
     uint32_t abort;
 
-    NVMEIOCQueue cq[NVME_MAX_QID];
-    NVMEIOSQueue sq[NVME_MAX_QID];
+    NVMEIOCQueue cq[NVME_MAX_QS_ALLOCATED];
+    NVMEIOSQueue sq[NVME_MAX_QS_ALLOCATED];
 
     DiskInfo **disk;
     uint32_t ns_size;

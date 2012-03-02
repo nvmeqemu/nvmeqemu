@@ -1094,7 +1094,7 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     LOG_NORM("%s(): called", __func__);
     block_size = 1 << disk->idtfy_ns->lbafx[disk->idtfy_ns->flbas & 0xf].lbads;
-    memset(disk->ns_util, 0, disk->idtfy_ns->nsze / (block_size + 7) / 8);
+    memset(disk->ns_util, 0, (disk->idtfy_ns->nsze + 7) / 8);
     disk->thresh_warn_issued = 0;
     disk->idtfy_ns->nuse = 0;
     disk->idtfy_ns->flbas = (disk->idtfy_ns->flbas & ~(0xf)) | (dw10 & 0xf);

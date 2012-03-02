@@ -306,7 +306,7 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     sq = &n->sq[c->qid];
     sq->id = c->qid;
-    sq->size = c->qsize;
+    sq->size = c->qsize + 1;
     sq->phys_contig = c->pc;
     sq->cq_id = c->cqid;
     sq->prio = c->qprio;
@@ -475,7 +475,7 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_DBG("kw q: cq[%d] phase_tag   %d", cq->id, cq->phase_tag);
     LOG_DBG("kw q: msix vector. cq[%d] vector %d irq_enabled %d",
                      cq->id, cq->vector, cq->irq_enabled);
-    cq->size = c->qsize;
+    cq->size = c->qsize + 1;
     cq->phys_contig = c->pc;
 
     return 0;

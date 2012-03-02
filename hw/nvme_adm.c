@@ -252,10 +252,10 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     mqes = (uint16_t *) n->cntrl_reg;
 
     /* Queue Size */
-    if (c->qsize > (*mqes + 1)) {
+    if (c->qsize > *mqes) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_MAX_QUEUE_SIZE_EXCEEDED;
-        LOG_NORM("%s():MQES %u exceeded", __func__, (*mqes + 1));
+        LOG_NORM("%s():MQES %u exceeded", __func__, *mqes);
         return FAIL;
     }
 
@@ -407,10 +407,10 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     mqes = (uint16_t *) n->cntrl_reg;
 
     /* Queue Size */
-    if (c->qsize > (*mqes + 1)) {
+    if (c->qsize > *mqes) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_MAX_QUEUE_SIZE_EXCEEDED;
-        LOG_NORM("%s():MQES %u exceeded", __func__, (*mqes + 1));
+        LOG_NORM("%s():MQES %u exceeded", __func__, *mqes);
         return FAIL;
     }
 

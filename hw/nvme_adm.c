@@ -1174,7 +1174,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     n->idtfy_ctrl->nn = find_last_bit(n->nn_vector, n->num_namespaces + 2);
     n->aon_ctrl_vs->tus -= ns_bytes;
     n->disk[nsid - 1] = (DiskInfo *)qemu_mallocz(sizeof(DiskInfo));
-    n->disk[nsid - 1]->ns_util = qemu_mallocz((ns.nsze /
+    n->disk[nsid - 1]->ns_util = qemu_mallocz((ns_bytes /
         (1 << block_shift) + 7) / 8);
     n->disk[nsid - 1]->idtfy_ns = qemu_mallocz(sizeof(ns));
     memcpy(n->disk[nsid - 1]->idtfy_ns, &ns, sizeof(ns));
@@ -1315,7 +1315,7 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     if (disk->idtfy_ns->nsze != ns.nsze) {
         /* change the size of the disk */
         disk->ns_util = qemu_realloc(disk->ns_util,
-            (ns.nsze / block_size + 7) / 8);
+            (ns_bytes / block_size + 7) / 8);
         if (posix_fallocate(disk->fd, 0, ns.ncap * block_size) != 0) {
             LOG_ERR("Error while modifying size of namespace");
             return FAIL;

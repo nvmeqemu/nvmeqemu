@@ -29,7 +29,7 @@
 
 static uint8_t is_cq_full(NVMEState *n, uint16_t qid)
 {
-    return (n->cq[qid].tail + 1) % (n->cq[qid].size + 1) == n->cq[qid].head;
+    return (n->cq[qid].tail + 1) % n->cq[qid].size == n->cq[qid].head;
 }
 
 static void incr_sq_head(NVMEIOSQueue *q)

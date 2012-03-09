@@ -78,26 +78,26 @@ static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,
     uint64_t *data_size_p, uint64_t *file_offset_p, uint8_t *mapping_addr)
 {
     uint64_t prp_list[512], prp_entries;
-    uint16_t i = 0;
-    uint8_t res = FAIL;
-    struct NVME_rw *cmd = (struct NVME_rw *)command;
+    uint16_t i;
+    uint8_t res = NVME_SC_SUCCESS;
+    NVME_rw *cmd = (NVME_rw *)command;
 
     LOG_DBG("Data Size remaining for read/write:%ld", *data_size_p);
 
     /* Logic to find the number of PRP Entries */
     prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) / PAGE_SIZE);
     nvme_dma_mem_read(cmd->prp2, (uint8_t *)prp_list,
-        prp_entries * sizeof(uint64_t));
+        min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
 
     i = 0;
     /* Read/Write on PRPList */
     while (*data_size_p != 0) {
-        if (i == 511) {
+        if (i == 511 && *data_size_p > PAGE_SIZE) {
             /* Calculate the actual number of remaining entries */
             prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) /
                 PAGE_SIZE);
             nvme_dma_mem_read(prp_list[511], (uint8_t *)prp_list,
-                prp_entries * sizeof(uint64_t));
+                min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
             i = 0;
         }
 
@@ -121,109 +121,32 @@ static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,
     Arguments    :    NVMEState * : Pointer to NVME device State
                       struct NVME_rw * : NVME IO command
 *********************************************************************/
-static void update_ns_util(DiskInfo *disk, struct NVME_rw *e)
+static void update_ns_util(DiskInfo *disk, uint64_t slba, uint64_t nlb)
 {
     uint64_t index;
 
     /* Update the namespace utilization */
-    for (index = e->slba; index <= e->nlb + e->slba; index++) {
+    for (index = slba; index <= nlb + slba; index++) {
         if (!((disk->ns_util[index / 8]) & (1 << (index % 8)))) {
             disk->ns_util[(index / 8)] |= (1 << (index % 8));
-            disk->idtfy_ns->nuse++;
+            disk->idtfy_ns.nuse++;
         }
     }
 }
 
-uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
+static void nvme_update_stats(NVMEState *n, DiskInfo *disk, uint8_t opcode,
+    uint64_t slba, uint64_t nlb)
 {
     uint64_t tmp;
-    struct NVME_rw *e = (struct NVME_rw *)sqe;
-    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
-    uint8_t res = FAIL;
-    uint64_t data_size, file_offset;
-    uint8_t *mapping_addr;
-    /* Assuming 64KB as maximum bloack size */
-    uint16_t nvme_blk_sz;
-    DiskInfo *disk;
+    if (opcode == NVME_CMD_WRITE) {
+        uint64_t old_use = disk->idtfy_ns.nuse;
 
-    sf->sc = NVME_SC_SUCCESS;
-    LOG_DBG("%s(): called", __func__);
-
-    if (sqe->opcode == NVME_CMD_FLUSH) {
-        return NVME_SC_SUCCESS;
-    }
-
-    if ((sqe->opcode != NVME_CMD_READ) &&
-        (sqe->opcode != NVME_CMD_WRITE)) {
-        LOG_NORM("%s():Wrong IO opcode:\t\t0x%02x", __func__, sqe->opcode);
-        sf->sc = NVME_SC_INVALID_OPCODE;
-        goto exit;
-    } else if (e->nsid == 0 || (e->nsid > n->num_namespaces) ||
-            n->disk[e->nsid - 1] == NULL) {
-        /* Check for valid values of namespace ID for IO R/W */
-        LOG_NORM("%s(): Invalid Namespace ID", __func__);
-        sf->sc = NVME_SC_INVALID_NAMESPACE;
-        goto exit;
-    }
-
-    disk = n->disk[e->nsid - 1];
-    if ((e->slba + e->nlb) >= disk->idtfy_ns->nsze) {
-        LOG_NORM("%s(): LBA out of range", __func__);
-        sf->sc = NVME_SC_LBA_RANGE;
-        goto exit;
-    } else if ((e->slba + e->nlb) >= disk->idtfy_ns->ncap) {
-        LOG_NORM("%s():Capacity Exceeded", __func__);
-        sf->sc = NVME_SC_CAP_EXCEEDED;
-        goto exit;
-    }
-
-    /* Read in the command */
-    nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns->lbafx[
-        disk->idtfy_ns->flbas].lbads);
-    LOG_DBG("NVME Block size: %u", nvme_blk_sz);
-    data_size = (e->nlb + 1) * nvme_blk_sz;
-
-    file_offset = e->slba * nvme_blk_sz;
-    mapping_addr = disk->mapping_addr;
-
-    /* Namespace not ready */
-    if (mapping_addr == NULL) {
-        LOG_NORM("%s():Namespace not ready", __func__);
-        sf->sc = NVME_SC_NS_NOT_READY;
-        goto exit;
-    }
-
-    /* Writing/Reading PRP1 */
-    res = do_rw_prp(n, e->prp1,
-        &data_size, &file_offset, mapping_addr, e->opcode);
-    if (res == FAIL) {
-        goto exit;
-    } else if (data_size == 0) {
-        goto ns_utl;
-    }
-
-    if (data_size <= PAGE_SIZE) {
-        LOG_DBG("Data Size remaining for read/write:%ld", data_size);
-        res = do_rw_prp(n, e->prp2,
-            &data_size, &file_offset, mapping_addr, e->opcode);
-        LOG_DBG("Data Size remaining for read/write:%ld", data_size);
-    } else {
-        res = do_rw_prp_list(n, sqe, &data_size, &file_offset, mapping_addr);
-    }
-
-    if (res == FAIL) {
-        goto exit;
-    }
-
-ns_utl:
-    if (e->opcode == NVME_CMD_WRITE) {
-        uint64_t old_use = disk->idtfy_ns->nuse;
-        update_ns_util(disk, e);
+        update_ns_util(disk, slba, nlb);
 
         /* check if there needs to be an event issued */
-        if (old_use != disk->idtfy_ns->nuse && !disk->thresh_warn_issued &&
-                (100 - (uint32_t)((((double)disk->idtfy_ns->nuse) /
-                    disk->idtfy_ns->nsze) * 100) < NVME_SPARE_THRESH)) {
+        if (old_use != disk->idtfy_ns.nuse && !disk->thresh_warn_issued &&
+                (100 - (uint32_t)((((double)disk->idtfy_ns.nuse) /
+                    disk->idtfy_ns.nsze) * 100) < NVME_SPARE_THRESH)) {
             LOG_NORM("Device:%d nsid:%d, setting threshold warning",
                 n->instance, disk->nsid);
             disk->thresh_warn_issued = 1;
@@ -234,18 +157,18 @@ ns_utl:
         if (++disk->host_write_commands[0] == 0) {
             ++disk->host_write_commands[1];
         }
-        disk->write_data_counter += e->nlb + 1;
+        disk->write_data_counter += nlb + 1;
         tmp = disk->data_units_written[0];
         disk->data_units_written[0] += (disk->write_data_counter / 1000);
         disk->write_data_counter %= 1000;
         if (tmp > disk->data_units_written[0]) {
             ++disk->data_units_written[1];
         }
-    } else if (e->opcode == NVME_CMD_READ) {
+    } else if (opcode == NVME_CMD_READ) {
         if (++disk->host_read_commands[0] == 0) {
             ++disk->host_read_commands[1];
         }
-        disk->read_data_counter += e->nlb + 1;
+        disk->read_data_counter += nlb + 1;
         tmp = disk->data_units_read[0];
         disk->data_units_read[0] += (disk->read_data_counter / 1000);
         disk->read_data_counter %= 1000;
@@ -253,9 +176,454 @@ ns_utl:
             ++disk->data_units_read[1];
         }
     }
-exit:
+}
+
+uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
+{
+    NVME_rw *e = (NVME_rw *)sqe;
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    uint8_t res;
+    uint64_t data_size, file_offset;
+    uint8_t *mapping_addr;
+    uint32_t nvme_blk_sz;
+    DiskInfo *disk;
+
+    sf->sc = NVME_SC_SUCCESS;
+    LOG_DBG("%s(): called", __func__);
+
+    if (sqe->opcode == NVME_CMD_FLUSH) {
+        return NVME_SC_SUCCESS;
+    }
+    if ((sqe->opcode != NVME_CMD_READ) &&
+        (sqe->opcode != NVME_CMD_WRITE)) {
+        LOG_NORM("%s():Wrong IO opcode:\t\t0x%02x", __func__, sqe->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+    if (e->nsid == 0 || (e->nsid > n->num_namespaces) ||
+            n->disk[e->nsid - 1] == NULL) {
+        /* Check for valid values of namespace ID for IO R/W */
+        LOG_NORM("%s(): Invalid nsid:%d", __func__, e->nsid);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+
+    disk = n->disk[e->nsid - 1];
+    if ((e->slba + e->nlb) >= disk->idtfy_ns.nsze) {
+        LOG_NORM("%s(): LBA out of range", __func__);
+        sf->sc = NVME_SC_LBA_RANGE;
+        return FAIL;
+    } else if ((e->slba + e->nlb) >= disk->idtfy_ns.ncap) {
+        LOG_NORM("%s():Capacity Exceeded", __func__);
+        sf->sc = NVME_SC_CAP_EXCEEDED;
+        return FAIL;
+    }
+
+    /* Read in the command */
+    nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns.lbaf[
+        disk->idtfy_ns.flbas].lbads);
+    LOG_DBG("NVME Block size: %u", nvme_blk_sz);
+    data_size = (e->nlb + 1) * nvme_blk_sz;
+
+    file_offset = e->slba * nvme_blk_sz;
+    mapping_addr = disk->mapping_addr;
+
+    /* Namespace not ready */
+    if (mapping_addr == NULL) {
+        LOG_NORM("%s():Namespace not ready", __func__);
+        sf->sc = NVME_SC_NS_NOT_READY;
+        return FAIL;
+    }
+
+    /* Writing/Reading PRP1 */
+    res = do_rw_prp(n, e->prp1, &data_size, &file_offset, mapping_addr,
+        e->opcode);
+    if (res == FAIL) {
+        return FAIL;
+    }
+    if (data_size > 0) {
+        if (data_size <= PAGE_SIZE) {
+            res = do_rw_prp(n, e->prp2, &data_size, &file_offset, mapping_addr,
+                e->opcode);
+        } else {
+            res = do_rw_prp_list(n, sqe, &data_size, &file_offset,
+                mapping_addr);
+        }
+        if (res == FAIL) {
+            return FAIL;
+        }
+    }
+
+    if (e->mptr != 0) {
+        unsigned int ms, meta_offset, meta_size;
+        uint8_t *meta_mapping_addr;
+
+        ms = disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas].ms;
+        meta_offset = e->slba * ms;
+        meta_size = (e->nlb + 1) * ms;
+        meta_mapping_addr = disk->meta_mapping_addr + meta_offset;
+
+        if (e->opcode == NVME_CMD_READ) {
+            nvme_dma_mem_write(e->mptr, meta_mapping_addr, meta_size);
+        } else if (e->opcode == NVME_CMD_WRITE) {
+            nvme_dma_mem_read(e->mptr, meta_mapping_addr, meta_size);
+        }
+    }
+
+    nvme_update_stats(n, disk, e->opcode, e->slba, e->nlb);
     return res;
 }
+
+uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t pdid)
+{
+    NVMEAonUserRwCmd *rw    = (NVMEAonUserRwCmd *)sqe;
+    NVMEStatusField  *sf    = (NVMEStatusField *)&cqe->status;
+    NVMEAonNStag     *nstag = NULL;
+    NVMEAonStag      *stag  = NULL;
+    NVMEAonStag      *mstag = NULL;
+    NVMEAonPD        *pd    = NULL;
+    DiskInfo         *disk  = NULL;
+
+    uint8_t *mapping_addr;
+    uint64_t data_size, file_offset, prp_offset, prp_index, prp_entries;
+    uint16_t blksize;
+
+    if (sqe->opcode == AON_CMD_USER_FLUSH) {
+        return NVME_SC_SUCCESS;
+    }
+    if (sqe->opcode != AON_CMD_USER_WRITE ||
+        sqe->opcode != AON_CMD_USER_READ) {
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+    if (rw->nstag == 0 || rw->nstag > n->aon_ctrl_vs->mnon) {
+        LOG_NORM("%s(): invalid nstag %d", __func__, rw->nstag);
+        sf->sc = NVME_AON_INVALID_NAMESPACE_TAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+    if (n->nstags[rw->nstag - 1] == NULL) {
+        LOG_NORM("%s(): unallocated nstag %d", __func__, rw->nstag);
+        sf->sc = NVME_AON_INVALID_NAMESPACE_TAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+    if (pdid == 0 || pdid > n->aon_ctrl_vs->mnpd) {
+        LOG_NORM("%s(): Invalid pdid %d", __func__, pdid);
+        sf->sc = NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+    if (n->protection_domains[pdid - 1] == NULL) {
+        LOG_NORM("%s(): pdid %d not allocated", __func__, pdid);
+        sf->sc = NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+    if (rw->stag == 0 || rw->stag > n->aon_ctrl_vs->mnhr) {
+        LOG_NORM("%s(): Invalid stag %d", __func__, rw->stag);
+        sf->sc = NVME_AON_INVALID_STAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+    if (n->stags[rw->stag - 1] == NULL) {
+        LOG_NORM("%s(): stag %d not allocated", __func__, rw->stag);
+        sf->sc = NVME_AON_INVALID_STAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+    if (rw->mdstag && rw->mdstag > n->aon_ctrl_vs->mnhr) {
+        LOG_NORM("%s(): Invalid meta-stag %d", __func__, rw->mdstag);
+        sf->sc = NVME_AON_INVALID_STAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+    if (rw->mdstag && n->stags[rw->mdstag - 1] == NULL) {
+        LOG_NORM("%s(): meta-stag %d not allocated", __func__, rw->stag);
+        sf->sc = NVME_AON_INVALID_STAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+
+    nstag = n->nstags[rw->nstag - 1];
+    stag = n->stags[rw->stag - 1];
+    pd = n->protection_domains[pdid - 1];
+    if (rw->mdstag) {
+        mstag = n->stags[rw->mdstag - 1];
+    }
+
+    if (nstag->nsid == 0 || nstag->nsid > n->num_namespaces) {
+        LOG_NORM("%s(): bad nsid referenced nstag", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+    if (n->disk[nstag->nsid - 1] == NULL) {
+        LOG_NORM("%s(): nsid unallocated", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+    if (stag->pdid != pdid) {
+        LOG_NORM("%s(): queue pdid:%d not match stag pdid:%d", __func__, pdid,
+            stag->pdid);
+        sf->sc = NVME_AON_CONFLICTING_ATTRIBUTES;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+
+    disk = n->disk[nstag->nsid - 1];
+    if ((rw->slba + rw->nlb) >= disk->idtfy_ns.nsze) {
+        LOG_NORM("%s(): LBA out of range", __func__);
+        sf->sc = NVME_SC_LBA_RANGE;
+        return FAIL;
+    } else if ((rw->slba + rw->nlb) >= disk->idtfy_ns.ncap) {
+        LOG_NORM("%s(): Capacity Exceeded", __func__);
+        sf->sc = NVME_SC_CAP_EXCEEDED;
+        return FAIL;
+    }
+
+    blksize = NVME_BLOCK_SIZE(disk->idtfy_ns.lbaf[
+        disk->idtfy_ns.flbas].lbads);
+    data_size = (rw->nlb + 1) * blksize;
+    file_offset = rw->slba * blksize;
+
+    if (disk->mapping_addr == NULL) {
+        LOG_NORM("%s(): Namespace not ready", __func__);
+        sf->sc = NVME_SC_NS_NOT_READY;
+        return FAIL;
+    }
+
+    mapping_addr = disk->mapping_addr + file_offset;
+
+    prp_entries = (uint64_t) ((data_size + stag->smps - 1) / stag->smps);
+    prp_offset = rw->sto * blksize;
+    prp_index = prp_offset / stag->smps;
+
+    if (prp_index + prp_entries > stag->nmp) {
+        LOG_NORM("%s(): stag offset:%lu for %lu prps beyond prp list:%lu",
+            __func__, rw->sto, prp_entries, stag->nmp);
+        sf->sc = NVME_AON_CONFLICTING_ATTRIBUTES;
+        return FAIL;
+    }
+    {
+        int i = 0;
+        uint64_t prp_list[prp_entries];
+        uint64_t data_len, mem_addr;
+
+        nvme_dma_mem_read(stag->prp + prp_index * stag->smps,
+            (uint8_t *)prp_list, prp_entries * sizeof(uint64_t));
+
+        mem_addr = prp_list[0] + (prp_offset % stag->smps);
+        data_len = stag->smps - (mem_addr % stag->smps);
+
+        if (data_len > data_size) {
+            data_len = data_size;
+        }
+
+        if (sqe->opcode == AON_CMD_USER_WRITE) {
+            nvme_dma_mem_read(mem_addr, mapping_addr, data_len);
+        } else if (sqe->opcode != AON_CMD_USER_READ) {
+            nvme_dma_mem_write(mem_addr, mapping_addr, data_len);
+        }
+        mapping_addr += data_len;
+
+        data_size -= data_len;
+        for (i = 1; i < prp_entries && data_size > 0; i++) {
+            mem_addr = prp_list[i];
+            data_len = stag->smps;
+            if (data_len > data_size) {
+                data_len = data_size;
+            }
+
+            if (sqe->opcode == AON_CMD_USER_WRITE) {
+                nvme_dma_mem_read(mem_addr, mapping_addr, data_len);
+            } else if (sqe->opcode == AON_CMD_USER_READ) {
+                nvme_dma_mem_write(mem_addr, mapping_addr, data_len);
+            }
+            data_size -= data_len;
+            mapping_addr += data_len;
+        }
+
+        if (data_size != 0 || i != prp_entries) {
+            LOG_ERR("%s(): bad transfer, prp entries:%lu, index:%d, and data"\
+                    "size:%lu", __func__, prp_entries, i, data_size);
+        }
+    }
+    nvme_update_stats(n, disk, rw->opcode & 0x3, rw->slba, rw->nlb);
+
+    if (mstag != NULL) {
+        uint64_t  ms, meta_offset, meta_size, mprp_offset, mprp_index,
+            mprp_entries;
+        uint8_t *meta_mapping_addr;
+
+        if (disk->meta_mapping_addr == NULL) {
+            LOG_NORM("%s(): meta data requested for disk with no meta-data",
+                __func__);
+            return FAIL;
+        }
+
+        ms = disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas].ms;
+        meta_offset = rw->slba * ms;
+        meta_size = (rw->nlb + 1) * ms;
+        meta_mapping_addr = disk->meta_mapping_addr + meta_offset;
+
+        mprp_entries = (uint64_t) ((meta_size + mstag->smps - 1) / mstag->smps);
+        mprp_offset = rw->mdsto * ms;
+        mprp_index = mprp_offset / mstag->smps;
+
+        if (mprp_index + mprp_entries > mstag->nmp) {
+            LOG_NORM("%s(): stag offset:%lu for %lu prps beyond prp list:%lu",
+                __func__, rw->sto, prp_entries, stag->nmp);
+            sf->sc = NVME_AON_CONFLICTING_ATTRIBUTES;
+            return FAIL;
+        }
+        {
+            int i = 0;
+            uint64_t prp_list[mprp_entries];
+            uint64_t data_len, mem_addr;
+
+            nvme_dma_mem_read(mstag->prp + mprp_index * mstag->smps,
+                (uint8_t *)prp_list, mprp_entries * sizeof(uint64_t));
+
+            mem_addr = prp_list[0] + (mprp_offset % mstag->smps);
+            data_len = mstag->smps - (mem_addr % mstag->smps);
+            if (data_len > meta_size) {
+                data_len = meta_size;
+            }
+            if (rw->opcode == AON_CMD_USER_WRITE) {
+                nvme_dma_mem_write(mem_addr, meta_mapping_addr, meta_size);
+            } else if (rw->opcode == AON_CMD_USER_READ) {
+                nvme_dma_mem_read(mem_addr, meta_mapping_addr, meta_size);
+            }
+            meta_size -= data_len;
+
+            for (i = 1; i < prp_entries && meta_size > 0; i++) {
+                mem_addr = prp_list[i];
+                data_len = mstag->smps;
+                if (data_len > meta_size) {
+                    data_len = meta_size;
+                }
+
+                if (sqe->opcode == AON_CMD_USER_WRITE) {
+                    nvme_dma_mem_read(mem_addr, meta_mapping_addr, data_len);
+                } else if (sqe->opcode == AON_CMD_USER_READ) {
+                    nvme_dma_mem_write(mem_addr, meta_mapping_addr, data_len);
+                }
+                meta_size -= data_len;
+            }
+
+            if (meta_size != 0 || i != prp_entries) {
+                LOG_ERR("%s(): bad transfer, prp entries:%lu, index:%d, and "\
+                        "data size:%lu",
+                    __func__, prp_entries, i, meta_size);
+            }
+        }
+    }
+
+    return NVME_SC_SUCCESS;
+}
+
+/* brnl stuff */
+#include <dirent.h>
+
+void *xrealloc(void);
+int make_fs(void);
+uint32_t write_sb(uint32_t root, uint32_t free);
+struct brnl_dirent *
+write_inode(char *name, uint32_t dirno, uint32_t prev, uint32_t region);
+uint32_t write_file(char *name, uint32_t dirno, uint32_t prev, uint32_t region);
+uint32_t write_dir(char *name, uint32_t dirno, uint32_t prev, uint32_t
+    fake_region);
+
+enum {
+	BRNL_DIR_REGION = 1,
+	BRNL_SUPER_MAGIC = 1818324545,
+};
+
+struct brnl_superblock {
+	uint32_t root_dir_fake_inum;
+	uint32_t root_dir_offset;
+	uint32_t free_space_offset;
+	uint32_t fake_inums_offset;
+};
+
+struct brnl_dirent {
+	char name[256];
+	uint32_t ino;		/* The fake inode this block belongs to */
+	uint8_t len;
+	uint8_t type;
+	uint8_t pad[2];
+	uint32_t prev;
+	uint32_t next;
+	uint32_t region_id;		/* Faked for non-files */
+	union {
+		struct {
+			uint32_t brnl_dir_offset;
+		} dir;
+	};
+};
+
+void *data = NULL;
+uint32_t current = 0;
+
+void *xrealloc(void)
+{
+	data = qemu_realloc(data, 512 * (current + 1));
+	if (!data)
+		exit(1);
+	memset(data + 512 * current, 0, 512);
+	return data + 512 * current;
+}
+
+uint32_t write_sb(uint32_t root, uint32_t free)
+{
+	struct brnl_superblock *sb = xrealloc();
+	sb->root_dir_offset = root;
+	sb->free_space_offset = free;
+	sb->fake_inums_offset = 2;
+	current = 3;
+	return current;
+}
+
+struct brnl_dirent *
+write_inode(char *name, uint32_t dirno, uint32_t prev, uint32_t region)
+{
+	struct brnl_dirent *de = xrealloc();
+	struct brnl_dirent *de_prev = data + 512 * prev;
+	de->prev = prev;
+	if (prev)
+		de_prev->next = current;
+	strcpy(de->name, name);
+	de->ino = dirno;
+	de->len = strlen(name);
+	de->region_id = region;
+	return de;
+}
+
+uint32_t write_file(char *name, uint32_t dirno, uint32_t prev, uint32_t region)
+{
+	struct brnl_dirent *de = write_inode(name, dirno, prev, region);
+	de->type = DT_REG;
+	return current++;
+}
+
+uint32_t write_dir(char *name, uint32_t dirno, uint32_t prev, uint32_t fake_region)
+{
+	struct brnl_dirent *de = write_inode(name, dirno, prev, fake_region);
+	de->type = DT_DIR;
+	de->dir.brnl_dir_offset = current + 1;
+	return current++;
+}
+
+int make_fs(void)
+{
+	uint32_t prev;
+	prev = write_sb(3, 1);
+	prev = write_dir((char*)"..", BRNL_DIR_REGION, 0, BRNL_DIR_REGION);
+	prev = write_file((char*)"apple", BRNL_DIR_REGION, prev, 4);
+	return current * 512;
+}
+
+/* end brnl stuff */
 
 /*********************************************************************
     Function     :    nvme_create_storage_disk
@@ -267,10 +635,10 @@ exit:
                       uint32_t : namespace id
                       DiskInfo * : NVME disk to create storage for
 *********************************************************************/
-int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk)
+int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
+    NVMEState *n)
 {
-    /* Assuming 64KB as maximum block size */
-    uint16_t nvme_blk_sz;
+    uint32_t blksize, blks, size, ms, msize;
     char str[64];
 
     snprintf(str, sizeof(str), "nvme_disk%d_n%d.img", instance, nsid);
@@ -282,17 +650,62 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk)
         return FAIL;
     }
 
-    nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns->
-        lbafx[disk->idtfy_ns->flbas].lbads);
+    blks = disk->idtfy_ns.ncap;
+    blksize = NVME_BLOCK_SIZE(disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas].lbads);
+    size = blks * blksize;
 
-    if (posix_fallocate(disk->fd, 0, disk->idtfy_ns->ncap *
-            nvme_blk_sz) != 0) {
+    if (size == 0) {
+        return SUCCESS;
+    }
+
+    if (posix_fallocate(disk->fd, 0, size) != 0) {
         LOG_ERR("Error while allocating space for namespace");
         return FAIL;
     }
 
-    disk->mapping_addr = NULL;
-    disk->mapping_size = 0;
+    disk->mapping_addr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+        MAP_SHARED, disk->fd, 0);
+    if (disk->mapping_addr == NULL) {
+        LOG_ERR("Error while opening namespace: %d", disk->nsid);
+        return FAIL;
+    }
+    disk->mapping_size = size;
+
+    LOG_NORM("created disk storage, mapping_addr:%p size:%lu", disk->mapping_addr, disk->mapping_size);
+
+    ms = disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas].ms;
+    if (ms != 0) {
+        msize = blks * ms;
+        snprintf(str, sizeof(str), "nvme_meta%d_n%d.img", instance, nsid);
+        disk->mfd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+        if (disk->mfd < 0) {
+            LOG_ERR("Error while creating the storage");
+            return FAIL;
+        }
+
+        msize = blks * ms;
+        if (posix_fallocate(disk->mfd, 0, msize) != 0) {
+            LOG_ERR("Error while allocating meta-data space for namespace");
+            return FAIL;
+        }
+
+        disk->meta_mapping_addr = mmap(NULL, msize, PROT_READ | PROT_WRITE,
+            MAP_SHARED, disk->mfd, 0);
+        if (disk->meta_mapping_addr == NULL) {
+            LOG_ERR("Error while opening namespace meta-data: %d", disk->nsid);
+            return FAIL;
+        }
+        disk->meta_mapping_size = msize;
+        memset(disk->meta_mapping_addr, 0xff, msize);
+    } else {
+        disk->meta_mapping_addr = NULL;
+        disk->meta_mapping_size = 0;
+    }
+
+    if (n->brnl && nsid == 1) {
+        int len = make_fs();
+        memcpy(disk->mapping_addr, data, len);
+    }
 
     return SUCCESS;
 }
@@ -314,7 +727,7 @@ int nvme_create_storage_disks(NVMEState *n)
         if (n->disk[i] == NULL) {
             continue;
         }
-        ret = nvme_create_storage_disk(n->instance, i + 1, n->disk[i]);
+        ret = nvme_create_storage_disk(n->instance, i + 1, n->disk[i], n);
     }
 
     LOG_NORM("%s():Backing store created for instance %d", __func__,
@@ -324,46 +737,7 @@ int nvme_create_storage_disks(NVMEState *n)
 }
 
 /*********************************************************************
-    Function     :    nvme_del_storage_disk
-    Description  :    Delete the NVME Storage Disk
-    Return Type  :    int (0:1 Success:Failure)
-
-    Arguments    :    DiskInfo * : Pointer to NVME disk
-*********************************************************************/
-int nvme_del_storage_disk(DiskInfo *disk)
-{
-    if (close(disk->fd) < 0) {
-        LOG_ERR("Unable to close the nvme disk");
-        return FAIL;
-    }
-    return SUCCESS;
-}
-
-/*********************************************************************
-    Function     :    nvme_del_storage_disks
-    Description  :    Deletes all NVME Storage Disks
-    Return Type  :    int (0:1 Success:Failure)
-
-    Arguments    :    NVMEState * : Pointer to NVME device State
-*********************************************************************/
-int nvme_del_storage_disks(NVMEState *n)
-{
-    uint32_t i;
-    int ret = SUCCESS;
-
-    /* If required do ftruncate to remove the allocated
-     * memory using posix_fallocate */
-    for (i = 0; i < n->num_namespaces; i++) {
-        if (n->disk[i] == NULL) {
-            continue;
-        }
-        ret = nvme_del_storage_disk(n->disk[i]);
-    }
-    return ret;
-}
-
-/*********************************************************************
-    Function     :    nvme_del_storage_disk
+    Function     :    nvme_close_storage_disk
     Description  :    Deletes NVME Storage Disk
     Return Type  :    int (0:1 Success:Failure)
 
@@ -378,6 +752,10 @@ int nvme_close_storage_disk(DiskInfo *disk)
         } else {
             disk->mapping_addr = NULL;
             disk->mapping_size = 0;
+            if (close(disk->fd) < 0) {
+                LOG_ERR("Unable to close the nvme disk");
+                return FAIL;
+            }
         }
     }
     return SUCCESS;
@@ -401,55 +779,6 @@ int nvme_close_storage_disks(NVMEState *n)
             continue;
         }
         ret = nvme_close_storage_disk(n->disk[i]);
-    }
-    return ret;
-}
-
-/*********************************************************************
-    Function     :    nvme_open_storage_disk
-    Description  :    Opens the NVME Storage Disk and its namespace
-    Return Type  :    int (0:1 Success:Failure)
-
-    Arguments    :    DiskInfo * : Pointer to NVME device State
-*********************************************************************/
-int nvme_open_storage_disk(DiskInfo *disk)
-{
-    uint16_t nvme_blk_sz;
-    if (disk->mapping_addr == NULL) {
-        nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns->lbafx[
-            disk->idtfy_ns->flbas].lbads);
-
-        disk->mapping_addr = mmap(NULL, disk->idtfy_ns->ncap * nvme_blk_sz,
-            PROT_READ | PROT_WRITE, MAP_SHARED, disk->fd, 0);
-
-        if (disk->mapping_addr == NULL) {
-            LOG_ERR("Error while opening namespace: %d", disk->nsid);
-            return FAIL;
-        }
-
-        disk->mapping_size = disk->idtfy_ns->ncap * nvme_blk_sz;
-    }
-    return SUCCESS;
-}
-
-/*********************************************************************
-    Function     :    nvme_open_storage_disks
-    Description  :    Opens the NVME Storage Disks and the
-                      namespaces within for usage
-    Return Type  :    int (0:1 Success:Failure)
-
-    Arguments    :    NVMEState * : Pointer to NVME device State
-*********************************************************************/
-int nvme_open_storage_disks(NVMEState *n)
-{
-    uint32_t i;
-    int ret = SUCCESS;
-
-    for (i = 0; i < n->num_namespaces; i++) {
-        if (n->disk[i] == NULL) {
-            continue;
-        }
-        ret = nvme_open_storage_disk(n->disk[i]);
     }
     return ret;
 }

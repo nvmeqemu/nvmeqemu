@@ -18,6 +18,8 @@
 
 #define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
 
+#define BYTES_PER_BLOCK 512
+
 /* Config FIlE names */
 #define NVME_CONFIG_FILE "NVME_device_NVME_config"
 #define PCI_CONFIG_FILE "NVME_device_PCI_config"
@@ -103,6 +105,13 @@
 
 #define NVME_SPARE_THRESH 20
 #define NVME_TEMPERATURE 0x143
+
+#define NVME_MAX_USER_SIZE 16384
+#define NVME_MAX_NAMESPACE_SIZE 8192
+#define NVME_MAX_NUM_NAMESPACES 256
+#define NVME_AON_MAX_NUM_PDS 64
+#define NVME_AON_MAX_NUM_STAGS 64
+#define NVME_AON_MAX_NUM_NSTAGS 64
 
 enum {
     NVME_COMMAND_SET = 0x0,
@@ -207,7 +216,6 @@ typedef struct NVMEAQA {
     uint32_t res1:4;
 } NVMEAQA;
 
-struct NVMECmd;
 typedef struct NVMEIOSQueue {
     uint16_t id;
     uint16_t cq_id;
@@ -230,8 +238,9 @@ typedef struct NVMEIOCQueue {
     uint16_t irq_enabled;
     uint16_t phys_contig;
     uint16_t size;
-    uint64_t dma_addr; /* DMA Address */
-    uint8_t phase_tag; /* check spec for Phase Tag details*/
+    uint64_t dma_addr;  /* DMA Address */
+    uint8_t  phase_tag; /* check spec for Phase Tag details*/
+    uint32_t pdid;      /* for aon */
 } NVMEIOCQueue;
 
 /* FIXME*/
@@ -408,7 +417,7 @@ typedef struct NVMEIdentifyNamespace {
     uint8_t  dpc;       /* [28] End2end Data Protection Capabilities */
     uint8_t  dps;       /* [29] End2end Data Protection Type Settings */
     uint8_t  res0[98];  /* [30-127] Reserved */
-    struct NVMELBAFormat lbafx[16]; /* [128-191] LBA Format 0-15 Support */
+    struct NVMELBAFormat lbaf[16]; /* [128-191] LBA Format 0-15 Support */
     uint8_t  res1[192]; /* [192-383] Reserved */
     uint8_t  vs[3712];  /* [384-4095] Vendor Specific */
 } NVMEIdentifyNamespace;
@@ -425,14 +434,19 @@ typedef struct AsyncEvent {
     AsyncResult result;
 } AsyncEvent;
 
-
 typedef struct DiskInfo {
     int fd;
+    int mfd;
     int nsid;
     size_t mapping_size;
     uint8_t *mapping_addr;
+
+    size_t meta_mapping_size;
+    uint8_t *meta_mapping_addr;
+
     /* Pointer to Identify Namespace Strucutre */
-    NVMEIdentifyNamespace *idtfy_ns;
+    NVMEIdentifyNamespace idtfy_ns;
+
     /* Namespace utilization bitmasks (rounded off) */
     uint8_t *ns_util;
     uint8_t thresh_warn_issued;
@@ -445,6 +459,23 @@ typedef struct DiskInfo {
     uint64_t host_read_commands[2];
     uint64_t host_write_commands[2];
 } DiskInfo;
+
+typedef struct NVMEAonPD {
+    uint32_t usage_count;
+} NVMEAonPD;
+
+typedef struct NVMEAonStag {
+    uint32_t pdid;
+    uint32_t smps;
+    uint64_t prp;
+    uint64_t nmp;
+} NVMEAonStag;
+
+typedef struct NVMEAonNStag {
+    uint32_t pdid;
+    uint32_t at;
+    uint32_t nsid;
+} NVMEAonNStag;
 
 typedef struct NVMEState {
     PCIDevice dev;
@@ -473,6 +504,7 @@ typedef struct NVMEState {
     uint32_t instance;
     uint32_t num_user_namespaces;
     uint64_t user_space;
+    uint32_t brnl;
 
     time_t start_time;
 
@@ -517,6 +549,10 @@ typedef struct NVMEState {
 
     unsigned long *nn_vector;
     unsigned long nn_vector_size;
+
+    NVMEAonPD    **protection_domains;
+    NVMEAonStag  **stags;
+    NVMEAonNStag **nstags;
 } NVMEState;
 
 /* Structure used for default initialization sequence (except doorbell) */
@@ -680,6 +716,9 @@ enum {
     NVME_CMD_FLUSH = 0x00,
     NVME_CMD_WRITE = 0x01,
     NVME_CMD_READ  = 0x02,
+    AON_CMD_USER_FLUSH = 0x40,
+    AON_CMD_USER_WRITE = 0x41,
+    AON_CMD_USER_READ = 0x42,
     NVME_CMD_LAST,
 };
 
@@ -882,7 +921,7 @@ typedef struct NVMEAdmCmdAsyncEvRq {
 } NVMEAdmCmdAsyncEvRq;
 
 
-struct NVME_rw {
+typedef struct NVME_rw {
     uint8_t  opcode;
     uint8_t  fuse;
     uint16_t cid;
@@ -896,7 +935,7 @@ struct NVME_rw {
     uint32_t cdw13;
     uint32_t cdw14;
     uint32_t cdw15;
-};
+} NVME_rw;
 
 typedef struct NVMECmd {
     uint8_t  opcode;
@@ -961,6 +1000,53 @@ typedef struct NVMECmdWrite {
     uint32_t lbatm:16;  /* CDW15[16-31] Logical Block Application Tag Mask*/
 } NVMECmdWrite;
 
+typedef struct NVMEAonAdmCmdCreateSTag {
+    uint32_t opcode :8;     /* CDW0[0-7]*/
+    uint32_t fuse :3;       /* CDW0[8-10]*/
+    uint32_t res :3;        /* CDW0[11-13]*/
+    uint32_t barriers :2;   /* CDW0[14-15] */
+    uint32_t cdw1;          /* CDW[1]*/
+    uint32_t cdw2;          /* CCDW[2-3]*/
+    uint32_t cdw3;
+    uint32_t cdw4;
+    uint32_t cdw5;
+    uint64_t prp1;          /* CDW[6-7]*/
+    uint32_t cdw8;
+    uint32_t cdw9;
+    uint32_t stag;          /* CDW[10]:Steering Tag*/
+    uint32_t smps :8;       /* CDW[11][bits:0-7]: Stag Memory Page Size */
+    uint32_t rstag :1;      /* CDW[11][bit:8]: Replace Stag */
+    uint32_t res1 :23;      /* CDW[11][bit:9:]:reserved*/
+    uint64_t nmp;           /* CDW[12:13]:Number of memory pages*/
+    uint32_t pdid;          /* CDW[14]:Protection Domain Identifier*/
+    uint32_t cdw15;
+} NVMEAonAdmCmdCreateSTag;
+
+typedef struct NVMEAonUserRwCmd {
+    uint32_t opcode :8;     /* CDW0[0-7]*/
+    uint32_t fuse :3;       /* CDW0[8-10]*/
+    uint32_t res :3;        /* CDW0[11-13]*/
+    uint32_t barriers :2;   /* CDW0[14-15] */
+    uint32_t cid :16;       /* CDW0[16-31]*/
+    uint32_t nstag;         /* CDW[1]: Namespace Tag */
+    uint64_t res1;          /* CDW[2-3]*/
+    uint64_t mdsto;         /* CDW[4-5]: Metadata STag Offset */
+    uint64_t sto;           /* CDW[6-7] STag Offset */
+    uint32_t mdstag;        /* CDW[8]: Metadata STag */
+    uint32_t stag;          /* CDW[9]: STag */
+    uint64_t slba;          /* CDW[10-11] */
+    uint32_t nlb:16;        /* CDW12[0-15] Number of Logical Blocks*/
+    uint32_t res2:10;       /* CDW12[16-25] Reserved*/
+    uint32_t prinfo:4;      /* CDW12[26-29] Protection Information Field*/
+    uint32_t fua:1;         /* CDW12[30] Force Unit Access*/
+    uint32_t lr:1;          /* CDW12[31] Limited Entry*/
+    uint32_t dsm:8;         /* CDW13[0-7] DataSet Management*/
+    uint32_t res3:24;       /* CDW13[8-31] Reserved */
+    uint32_t eilbrt;        /* CDW14 Expected Initial Logical Block Reference Tag*/
+    uint32_t elbat:16;      /* CDW15[0-15] Expected Logical Block Application Tag*/
+    uint32_t elbatm:16;
+} NVMEAonUserRwCmd;
+
 typedef struct NVMEStatusField {
     uint16_t p:1;   /* phase tag */
     uint16_t sc:8;  /* Status Code */
@@ -1018,12 +1104,14 @@ enum {
 
 /* AON Specific Status Codes */
 enum {
-    NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER = 0x88,
+    NVME_AON_CONFLICTING_ATTRIBUTES = 0x80,
     NVME_AON_INVALID_STAG = 0x82,
     NVME_AON_INVALID_NAMESPACE_SIZE = 0x83,
     NVME_AON_INVALID_NAMESPACE_CAPACITY = 0x84,
     NVME_AON_INVALID_LOGICAL_BLOCK_FORMAT = 0x85,
     NVME_AON_INVALID_END_TO_END_DATA_PROTECTION_CONFIGURATION = 0x86,
+    NVME_AON_INVALID_NAMESPACE_TAG = 0x87,
+    NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER = 0x88,
 };
 
 /* Figure 20: Status Code – Media Error Values */
@@ -1044,7 +1132,7 @@ typedef struct NVMECQE {
     uint16_t sq_head; /* DW2[0-15] SQ Head Pointer */
     uint16_t sq_id; /* DW2[16-31] SQ ID */
     uint16_t command_id; /* DW3[0-15] Command ID */
-    uint16_t status; /* DW3[16] Phase Tag & DW3[17-31] Status Field */
+    NVMEStatusField status; /* DW3[16] Phase Tag & DW3[17-31] Status Field */
 } NVMECQE;
 
 
@@ -1076,6 +1164,7 @@ uint8_t nvme_admin_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
 
 /* IO command processing */
 uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
+uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t pdid);
 
 /* Storage Disk */
 int nvme_open_storage_disks(NVMEState *n);
@@ -1085,8 +1174,7 @@ int nvme_close_storage_disk(DiskInfo *disk);
 int nvme_create_storage_disks(NVMEState *n);
 int nvme_del_storage_disks(NVMEState *n);
 int nvme_del_storage_disk(DiskInfo *disk);
-int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk);
-
+int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk, NVMEState *n);
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len);
 void nvme_dma_mem_write(target_phys_addr_t addr, uint8_t *buf, int len);

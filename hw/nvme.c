@@ -26,7 +26,6 @@
 #include "nvme_debug.h"
 #include "range.h"
 
-#define BYTES_PER_BLOCK 512
 #define BYTES_PER_MB (1024ULL * 1024ULL)
 
 static const VMStateDescription vmstate_nvme = {
@@ -298,8 +297,7 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
                  * check enable bit CC.EN
                  */
                 if (nvme_dev->cq[ACQ_ID].dma_addr &&
-                    nvme_dev->sq[ASQ_ID].dma_addr &&
-                    (!nvme_open_storage_disks(nvme_dev))) {
+                    nvme_dev->sq[ASQ_ID].dma_addr) {
                     /* Update CSTS.RDY based on CC.EN and set the phase tag */
                     nvme_dev->cntrl_reg[NVME_CTST] |= CC_EN ;
                     nvme_dev->cq[ACQ_ID].phase_tag = 1;
@@ -313,21 +311,29 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
 
                     nvme_dev->aon_ctrl_vs = (AONIdCtrlVs *)&nvme_dev->
                         idtfy_ctrl->vs[0];
+                    nvme_dev->aon_ctrl_vs->acc = 1 | 1 << 1;
                     nvme_dev->aon_ctrl_vs->mns = 12; /* 4KB */
                     nvme_dev->aon_ctrl_vs->mws = 6; /* 64B */
-                    nvme_dev->aon_ctrl_vs->mnpd = 32; /* 32 PDs */
+                    nvme_dev->aon_ctrl_vs->mnpd = NVME_AON_MAX_NUM_PDS;
                     nvme_dev->aon_ctrl_vs->tus = nvme_dev->user_space *
-                        1024 * 1024;
+                        BYTES_PER_MB;
                     nvme_dev->aon_ctrl_vs->mnn = nvme_dev->num_namespaces;
-                    nvme_dev->aon_ctrl_vs->mnhr = 0x10; /* 16 stags */
-                    nvme_dev->aon_ctrl_vs->mnon = 0;
+                    nvme_dev->aon_ctrl_vs->mnhr = NVME_AON_MAX_NUM_STAGS;
+                    nvme_dev->aon_ctrl_vs->mnon = NVME_AON_MAX_NUM_NSTAGS;
                     nvme_dev->aon_ctrl_vs->ows = 6;
                     nvme_dev->aon_ctrl_vs->mows = 6;
-                    nvme_dev->aon_ctrl_vs->smpsmax = 4; /* 64k */
+                    nvme_dev->aon_ctrl_vs->smpsmax = 0; /* 4k */
                     nvme_dev->aon_ctrl_vs->smpsmin = 0; /* 4k */
                     nvme_dev->aon_ctrl_vs->nlbaf = 0;
-                    nvme_dev->aon_ctrl_vs->mc = 0;
-                    nvme_dev->aon_ctrl_vs->dpc = 0;
+                    nvme_dev->aon_ctrl_vs->mc = 1 << 1;
+                    nvme_dev->aon_ctrl_vs->dpc = 1 << 4 | 1 << 3 | 1 << 0;
+
+                    nvme_dev->protection_domains = qemu_mallocz(
+                        sizeof(NVMEAonPD*)*nvme_dev->aon_ctrl_vs->mnpd);
+                    nvme_dev->stags = qemu_mallocz(
+                        sizeof(NVMEAonStag*)*nvme_dev->aon_ctrl_vs->mnhr);
+                    nvme_dev->nstags = qemu_mallocz(
+                        sizeof(NVMEAonNStag*)*nvme_dev->aon_ctrl_vs->mnon);
                 } else {
                     nvme_dev->use_aon = 0;
                 }
@@ -705,7 +711,6 @@ static void clear_nvme_device(NVMEState *n)
     /* Inflight Operations will not be processed */
     qemu_del_timer(n->sq_processing_timer);
     n->sq_processing_timer_target = 0;
-    nvme_close_storage_disks(n);
 
     /* Saving the Admin Queue States before reset */
     n->aqstate.aqa = nvme_cntrl_read_config(n, NVME_AQA, DWORD);
@@ -851,6 +856,69 @@ static void read_file(NVMEState *n, uint8_t space)
     }
 }
 
+static void setup_for_brnl(NVMEState *n)
+{
+    DiskInfo *disk;
+
+    /* namespace region 1, brnl metadata */
+    disk = qemu_mallocz(sizeof(*disk));
+    disk->idtfy_ns.nsze = (64 * BYTES_PER_MB) / BYTES_PER_BLOCK;
+    disk->idtfy_ns.ncap = (64 * BYTES_PER_MB) / BYTES_PER_BLOCK;
+    disk->idtfy_ns.nuse = (64 * BYTES_PER_MB) / BYTES_PER_BLOCK;
+    disk->idtfy_ns.nlbaf = 0;
+    disk->idtfy_ns.flbas = 0;
+    disk->idtfy_ns.lbaf[0].ms = 0;
+    disk->idtfy_ns.lbaf[0].lbads = 9;
+    disk->idtfy_ns.lbaf[0].rp = 2;\
+    disk->ns_util = qemu_mallocz(((64 * BYTES_PER_MB) / BYTES_PER_BLOCK + 0x7) / 0x8);
+
+    n->disk[0] = disk;
+    set_bit(1, n->nn_vector);
+
+    /* namespace region 2, brnl root directory */
+    disk = qemu_mallocz(sizeof(*disk));
+    disk->idtfy_ns.nsze = (1024 * BYTES_PER_MB) / BYTES_PER_BLOCK;
+    disk->idtfy_ns.ncap = (1024 * BYTES_PER_MB) / BYTES_PER_BLOCK;
+    disk->idtfy_ns.nuse = 0;
+    disk->idtfy_ns.nlbaf = 0;
+    disk->idtfy_ns.flbas = 0;
+    disk->idtfy_ns.lbaf[0].ms = 0;
+    disk->idtfy_ns.lbaf[0].lbads = 9;
+    disk->idtfy_ns.lbaf[0].rp = 2;
+    disk->ns_util = qemu_mallocz(((64 * BYTES_PER_MB) / BYTES_PER_BLOCK + 0x7) / 0x8);
+
+    n->disk[1] = disk;
+    set_bit(2, n->nn_vector);
+
+    /* namespace region 3, brnl empty entry */
+    disk = qemu_mallocz(sizeof(*disk));
+    disk->idtfy_ns.nsze = 0;
+    disk->idtfy_ns.ncap = 0;
+    disk->idtfy_ns.nuse = 0;
+    disk->idtfy_ns.nlbaf = 0;
+    disk->idtfy_ns.flbas = 0;
+    disk->idtfy_ns.lbaf[0].ms = 0;
+    disk->idtfy_ns.lbaf[0].lbads = 9;
+    disk->idtfy_ns.lbaf[0].rp = 2;
+
+    n->disk[2] = disk;
+    set_bit(3, n->nn_vector);
+
+    /* namespace region 4, brnl "apple" file */
+    disk = qemu_mallocz(sizeof(*disk));
+    disk->idtfy_ns.nsze = (1024 * BYTES_PER_MB) / BYTES_PER_BLOCK;
+    disk->idtfy_ns.ncap = (1024 * BYTES_PER_MB) / BYTES_PER_BLOCK;
+    disk->idtfy_ns.nuse = 0;
+    disk->idtfy_ns.nlbaf = 0;
+    disk->idtfy_ns.flbas = 0;
+    disk->idtfy_ns.lbaf[0].ms = 0;
+    disk->idtfy_ns.lbaf[0].lbads = 9;
+    disk->idtfy_ns.lbaf[0].rp = 2;
+    disk->ns_util = qemu_mallocz(((64 * BYTES_PER_MB) / BYTES_PER_BLOCK + 0x7) / 0x8);
+
+    n->disk[3] = disk;
+    set_bit(4, n->nn_vector);
+}
 
 /*********************************************************************
     Function     :    read_identify_cns
@@ -876,21 +944,21 @@ static void read_identify_cns(NVMEState *n)
             return;
         }
 
-        disk->idtfy_ns = qemu_mallocz(sizeof(*(disk->idtfy_ns)));
-        if (!disk->idtfy_ns) {
-            LOG_ERR("Identify Space not allocated!");
-            qemu_free(disk);
-            return;
-        }
-        disk->idtfy_ns->nsze = (n->ns_size * BYTES_PER_MB) / BYTES_PER_BLOCK;
-        disk->idtfy_ns->ncap = (n->ns_size * BYTES_PER_MB) / BYTES_PER_BLOCK;
-        disk->idtfy_ns->nuse = 0;
-        disk->idtfy_ns->nlbaf = NO_LBA_FORMATS;
-        disk->idtfy_ns->flbas = LBA_FORMAT_INUSE;
+        disk->idtfy_ns.nsze = (n->ns_size * BYTES_PER_MB) / BYTES_PER_BLOCK;
+        disk->idtfy_ns.ncap = (n->ns_size * BYTES_PER_MB) / BYTES_PER_BLOCK;
+        disk->idtfy_ns.nuse = 0;
+        disk->idtfy_ns.nlbaf = NO_LBA_FORMATS;
+        disk->idtfy_ns.flbas = LBA_FORMAT_INUSE;
+
+        /* meta data capabilities */
+        disk->idtfy_ns.mc = 1 << 1;
+        disk->idtfy_ns.dpc = 1 << 4 | 1 << 3 | 1 << 0;
+        disk->idtfy_ns.dps = 3;
 
         /* Filling in the LBA Format structure */
         for (i = 0; i <= NO_LBA_FORMATS; i++) {
-            disk->idtfy_ns->lbafx[i].lbads = LBA_SIZE;
+            disk->idtfy_ns.lbaf[i].lbads = LBA_SIZE;
+            disk->idtfy_ns.lbaf[i].ms = 8;
         }
 
         disk->ns_util = qemu_mallocz(((n->ns_size * BYTES_PER_MB) /
@@ -900,7 +968,7 @@ static void read_identify_cns(NVMEState *n)
         set_bit(index + 1, n->nn_vector);
 
         LOG_NORM("Capacity of namespace %d: %lu", index+1,
-            disk->idtfy_ns->ncap);
+            disk->idtfy_ns.ncap);
     }
 
     n->idtfy_ctrl = qemu_mallocz(sizeof(*(n->idtfy_ctrl)));
@@ -960,25 +1028,31 @@ static int pci_nvme_init(PCIDevice *pci_dev)
 
     n->start_time = time(NULL);
 
-    if (n->num_namespaces == 0 || n->num_namespaces > 16) {
-        LOG_ERR("bad number of namespaces value:%u, must be between 1 and 16",
-            n->num_namespaces);
+    if (n->num_namespaces == 0 || n->num_namespaces > NVME_MAX_NUM_NAMESPACES) {
+        LOG_ERR("bad number of namespaces value:%u, must be between 1 and %d",
+            n->num_namespaces, NVME_MAX_NUM_NAMESPACES);
         return -1;
     }
-    if (n->ns_size == 0 || n->ns_size > 8192) {
-        LOG_ERR("bad namespace size value:%u, must be between 1 and 8192",
-            n->ns_size);
+    if (n->ns_size == 0 || n->ns_size > NVME_MAX_NAMESPACE_SIZE) {
+        LOG_ERR("bad namespace size value:%u, must be between 1 and %d",
+            n->ns_size, NVME_MAX_NAMESPACE_SIZE);
         return -1;
     }
-    if (n->user_space > 8192) {
-        LOG_ERR("bad user size value:%lu, must be less than 8192",
-            n->user_space);
+    if (n->user_space > NVME_MAX_USER_SIZE) {
+        LOG_ERR("bad user size value:%lu, must be less than %d",
+            n->user_space, NVME_MAX_USER_SIZE);
         return -1;
     }
     if (n->num_user_namespaces > n->num_namespaces) {
         LOG_ERR("bad user namespaces value:%u, must be less than namespaces:%u",
             n->num_user_namespaces, n->num_namespaces);
         return -1;
+    }
+    if (n->brnl) {
+        LOG_NORM("overriding all values for brnl use");
+        n->num_namespaces = NVME_MAX_NUM_NAMESPACES;
+        n->num_user_namespaces = NVME_MAX_NUM_NAMESPACES - 1;
+        n->user_space = NVME_MAX_USER_SIZE;
     }
 
     n->instance = instance++;
@@ -1065,6 +1139,11 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     /* Update the Identify Space of the controller */
     read_identify_cns(n);
 
+    if(n->brnl) {
+        /* setup namespaces for brnl */
+        setup_for_brnl(n);
+    }
+
     /* Reading CC.MPS field */
     memcpy(&mps, &n->cntrl_reg[NVME_CC], WORD);
     mps &= (uint16_t) MASK(4, 7);
@@ -1109,7 +1188,6 @@ static int pci_nvme_uninit(PCIDevice *pci_dev)
 
     for (index = 0; index < n->num_namespaces; index++) {
         if (n->disk[index] != NULL) {
-            qemu_free(n->disk[index]->idtfy_ns);
             qemu_free(n->disk[index]);
         }
     }
@@ -1123,8 +1201,12 @@ static int pci_nvme_uninit(PCIDevice *pci_dev)
         n->sq_processing_timer = NULL;
     }
 
+    if(n->async_event_timer) {
+        qemu_free_timer(n->async_event_timer);
+        n->async_event_timer = NULL;
+    }
+
     nvme_close_storage_disks(n);
-    nvme_del_storage_disks(n);
     LOG_NORM("Freed NVME device memory");
     return 0;
 }
@@ -1144,6 +1226,7 @@ static PCIDeviceInfo nvme_info = {
         DEFINE_PROP_UINT32("size", NVMEState, ns_size, 512),
         DEFINE_PROP_UINT64("uspace", NVMEState, user_space, 0),
         DEFINE_PROP_UINT32("unamespaces", NVMEState, num_user_namespaces, 0),
+        DEFINE_PROP_UINT32("brnl", NVMEState, brnl, 0),
         DEFINE_PROP_END_OF_LIST(),
     }
 };

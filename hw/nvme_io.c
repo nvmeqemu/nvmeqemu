@@ -35,8 +35,6 @@ static uint8_t is_cq_full(NVMEState *n, uint16_t qid)
 static void incr_sq_head(NVMEIOSQueue *q)
 {
     q->head = (q->head + 1) % q->size;
-    LOG_DBG("%s(): (SQID, HD, SZ) = (%d, %d, %d)", __func__,
-        q->id, q->head, q->size);
 }
 
 void incr_cq_tail(NVMEIOCQueue *q)
@@ -147,9 +145,14 @@ void process_sq(NVMEState *n, uint16_t sq_id)
             /* completion entry is done separately */
             return;
         }
-    } else {
+    } else if (!n->cq[cq_id].pdid) {
        /* TODO add support for IO commands with different sizes of Q elements */
         nvme_io_command(n, &sqe, &cqe);
+    } else if (n->use_aon) {
+        /* aon user read/write command */
+        nvme_aon_io_command(n, &sqe, &cqe, n->cq[cq_id].pdid);
+    } else {
+        cqe.status.sc = NVME_SC_INVALID_OPCODE;
     }
 
     /* Filling up the CQ entry */

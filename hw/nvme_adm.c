@@ -1628,6 +1628,7 @@ static uint32_t aon_adm_cmd_create_nstag(NVMEState *n, NVMECmd *cmd,
     n->nstags[ntag - 1] = qemu_mallocz(sizeof(NVMEAonNStag));
     n->nstags[ntag - 1]->pdid = pdid;
     n->nstags[ntag - 1]->at = at;
+    n->nstags[ntag - 1]->nsid = cmd->nsid;
 
     n->protection_domains[pdid - 1]->usage_count++;
 

@@ -315,7 +315,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t p
         return FAIL;
     }
     if (n->protection_domains[pdid - 1] == NULL) {
-        LOG_NORM("%s(): pdid %d not allocated", __func__, pdid);
+        LOG_ERR("%s(): pdid %d not allocated", __func__, pdid);
         sf->sc = NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER;
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
@@ -353,12 +353,12 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t p
     }
 
     if (nstag->nsid == 0 || nstag->nsid > n->num_namespaces) {
-        LOG_NORM("%s(): bad nsid referenced nstag", __func__);
+        LOG_ERR("%s(): bad nsid referenced nstag", __func__);
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }
     if (n->disk[nstag->nsid - 1] == NULL) {
-        LOG_NORM("%s(): nsid unallocated", __func__);
+        LOG_ERR("%s(): nsid unallocated", __func__);
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }

@@ -674,7 +674,7 @@ static uint32_t adm_cmd_abort(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEAdmCmdAbort *c = (NVMEAdmCmdAbort *)cmd;
     NVMEIOSQueue *sq;
-    uint16_t i, tmp;
+    uint32_t i, tmp;
     target_phys_addr_t addr;
     NVMECmd sqe;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;

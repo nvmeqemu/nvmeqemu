@@ -199,11 +199,11 @@ struct NVMECmd;
 typedef struct NVMEIOSQueue {
     uint16_t id;
     uint16_t cq_id;
-    uint16_t head;
-    uint16_t tail;
+    uint32_t head;
+    uint32_t tail;
     uint16_t prio;
     uint16_t phys_contig;
-    uint16_t size;
+    uint32_t size;
     uint64_t dma_addr; /* DMA Address */
     /*FIXME: Add support for PRP List. */
     uint32_t abort_cmd_id[NVME_ABORT_COMMAND_LIMIT];
@@ -213,12 +213,12 @@ struct NVMECQE;
 typedef struct NVMEIOCQueue {
     uint16_t id;
     uint16_t usage_cnt; /* how many sq is linked */
-    uint16_t head;
-    uint16_t tail;
+    uint32_t head;
+    uint32_t tail;
     uint32_t vector;
     uint16_t irq_enabled;
     uint16_t phys_contig;
-    uint16_t size;
+    uint32_t size;
     uint64_t dma_addr; /* DMA Address */
     uint8_t phase_tag; /* check spec for Phase Tag details*/
 } NVMEIOCQueue;

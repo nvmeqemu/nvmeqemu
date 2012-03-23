@@ -1001,7 +1001,7 @@ int nvme_del_storage_disk(NVMEState *n , uint32_t disk_num);
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len);
 void nvme_dma_mem_write(target_phys_addr_t addr, uint8_t *buf, int len);
-void process_sq(NVMEState *n, uint16_t sq_id);
+int process_sq(NVMEState *n, uint16_t sq_id);
 
 /* Config file read functions */
 int read_config_file(FILE *, NVMEState *, uint8_t);

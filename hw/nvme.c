@@ -6,6 +6,7 @@
  *    Krzysztof Wierzbicki <krzysztof.wierzbicki@intel.com>
  *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
+ *    Sravan Kumar Thokala <sravan.kumar.thokala@intel.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -93,18 +94,18 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
             return;
         }
         nvme_dev->sq[queue_id].tail = val & 0xffff;
+    }
 
-        /* Check if the SQ processing routine is scheduled for
-         * execution within 5 uS.If it isn't, make it so
-         */
-
-
-        deadline = qemu_get_clock_ns(vm_clock) + 5000;
-
-        if (nvme_dev->sq_processing_timer_target == 0) {
-            qemu_mod_timer(nvme_dev->sq_processing_timer, deadline);
-            nvme_dev->sq_processing_timer_target = deadline;
-        }
+    /*
+     * Checking for more cmds to execute is desired not only when an SQ doorbell
+     * is rung, but also if something has been removed from a CQ, thus causing
+     * room for more cmds to execute and place CE's into that CQ. Remember
+     * SQ's must stop placing CE's into CQ's when those CQ's are full, but
+     * there may be more SQ elements which need processing */
+    deadline = qemu_get_clock_ns(vm_clock) + 5000;
+    if (nvme_dev->sq_processing_timer_target == 0) {
+        qemu_mod_timer(nvme_dev->sq_processing_timer, deadline);
+        nvme_dev->sq_processing_timer_target = deadline;
     }
     return;
 }
@@ -156,14 +157,12 @@ static void sq_processing_timer_cb(void *param)
     int entries_to_process = ENTRIES_TO_PROCESS;
 
     /* Check SQs for work */
-    /* TODO: Remove the sequential looping for Queue Commands
-     * coz if one Q blocks for wahtever reason (CQ full)..remaining
-     * Queues having valid data won't be processed
-     */
     for (sq_id = 0; sq_id < NVME_MAX_QS_ALLOCATED; sq_id++) {
         while (n->sq[sq_id].head != n->sq[sq_id].tail) {
             /* Handle one SQ entry */
-            process_sq(n, sq_id);
+            if (process_sq(n, sq_id)) {
+                break;
+            }
             entries_to_process--;
             if (entries_to_process == 0) {
                 /* Check back in a short while : 5 uS */
@@ -486,7 +485,7 @@ static uint32_t nvme_mmio_readl(void *opaque, target_phys_addr_t addr)
     uint32_t rd_val = 0;
     NVMEState *nvme_dev = (NVMEState *) opaque;
 
-    LOG_DBG("%s(): addr = 0x%08x", __func__, (unsigned)addr);
+   LOG_DBG("%s(): addr = 0x%08x", __func__, (unsigned)addr);
 
     /* Check if NVME controller Capabilities was written */
     if (addr < NVME_SQ0TDBL) {

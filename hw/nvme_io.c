@@ -98,7 +98,7 @@ static uint64_t find_discontig_queue_entry(uint32_t pg_size, uint16_t queue_ptr,
     return dma_addr;
 }
 
-void process_sq(NVMEState *n, uint16_t sq_id)
+int process_sq(NVMEState *n, uint16_t sq_id)
 {
     target_phys_addr_t addr;
     uint16_t cq_id;
@@ -110,11 +110,12 @@ void process_sq(NVMEState *n, uint16_t sq_id)
         == 0) {
         LOG_ERR("Required Submission/Completion Queue does not exist");
         n->sq[sq_id].head = n->sq[sq_id].tail = 0;
-        goto exit;
+        return -1;
     }
     cq_id = n->sq[sq_id].cq_id;
     if (is_cq_full(n, cq_id)) {
-        return;
+        LOG_DBG("CQ %d is full", cq_id);
+        return -1;
     }
     memset(&cqe, 0, sizeof(cqe));
 
@@ -133,7 +134,7 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     if (n->abort) {
         if (abort_command(n, sq_id, &sqe)) {
             incr_sq_head(&n->sq[sq_id]);
-            return;
+            return 0;
         }
     }
 
@@ -173,16 +174,12 @@ void process_sq(NVMEState *n, uint16_t sq_id)
                  with interrupt vector 0"
         */
         msix_notify(&(n->dev), 0);
-        return;
+        return 0;
     }
 
     if (n->cq[cq_id].irq_enabled) {
         msix_notify(&(n->dev), n->cq[cq_id].vector);
-    } else {
-        LOG_NORM("kw q: IRQ not enabled for CQ: %d", cq_id);
     }
 
-exit:
-    return;
-
+    return 0;
 }

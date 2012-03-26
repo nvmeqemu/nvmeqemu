@@ -640,7 +640,8 @@ int make_fs(void)
 int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
     NVMEState *n)
 {
-    uint32_t blksize, blks, size, ms, msize;
+    uint32_t blksize, blks, ms, msize;
+    uint64_t size;
     char str[64];
 
     snprintf(str, sizeof(str), "nvme_disk%d_n%d.img", instance, nsid);
@@ -654,7 +655,7 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
 
     blks = disk->idtfy_ns.ncap;
     blksize = NVME_BLOCK_SIZE(disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas].lbads);
-    size = blks * blksize;
+    size = (uint64_t)blks * blksize;
 
     if (size == 0) {
         return SUCCESS;
@@ -673,7 +674,8 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
     }
     disk->mapping_size = size;
 
-    LOG_NORM("created disk storage, mapping_addr:%p size:%lu", disk->mapping_addr, disk->mapping_size);
+    LOG_NORM("created disk storage, mapping_addr:%p size:%lu",
+        disk->mapping_addr, disk->mapping_size);
 
     ms = disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas].ms;
     if (ms != 0) {

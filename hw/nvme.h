@@ -113,6 +113,9 @@
 #define NVME_AON_MAX_NUM_STAGS 64
 #define NVME_AON_MAX_NUM_NSTAGS 64
 
+#define NVME_MAX_DROP_RATE 10000000
+#define NVME_MIN_DROP_RATE 100
+
 enum {
     NVME_COMMAND_SET = 0x0,
     AON_COMMAND_SET  = 0x1
@@ -216,6 +219,11 @@ typedef struct NVMEAQA {
     uint32_t res1:4;
 } NVMEAQA;
 
+typedef struct CommandEntry {
+    QTAILQ_ENTRY(CommandEntry) entry;
+    uint16_t cid;
+} CommandEntry;
+
 typedef struct NVMEIOSQueue {
     uint16_t id;
     uint16_t cq_id;
@@ -223,10 +231,10 @@ typedef struct NVMEIOSQueue {
     uint16_t tail;
     uint16_t prio;
     uint16_t phys_contig;
-    uint16_t size;
+    uint32_t size;
     uint64_t dma_addr; /* DMA Address */
     /*FIXME: Add support for PRP List. */
-    uint32_t abort_cmd_id[NVME_ABORT_COMMAND_LIMIT];
+    QTAILQ_HEAD(cmd_list, CommandEntry) cmd_list;
 } NVMEIOSQueue;
 
 typedef struct NVMEIOCQueue {
@@ -237,7 +245,7 @@ typedef struct NVMEIOCQueue {
     uint32_t vector;
     uint16_t irq_enabled;
     uint16_t phys_contig;
-    uint16_t size;
+    uint32_t size;
     uint64_t dma_addr;  /* DMA Address */
     uint8_t  phase_tag; /* check spec for Phase Tag details*/
     uint32_t pdid;      /* for aon */
@@ -493,7 +501,6 @@ typedef struct NVMEState {
     uint8_t *used_mask; /* Used/Resv mask */
 
     struct nvme_features feature;
-    uint32_t abort;
 
     NVMEIOCQueue cq[NVME_MAX_QS_ALLOCATED];
     NVMEIOSQueue sq[NVME_MAX_QS_ALLOCATED];
@@ -505,6 +512,7 @@ typedef struct NVMEState {
     uint32_t num_user_namespaces;
     uint64_t user_space;
     uint32_t brnl;
+    uint32_t drop_rate;
 
     time_t start_time;
 
@@ -1178,7 +1186,7 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk, N
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len);
 void nvme_dma_mem_write(target_phys_addr_t addr, uint8_t *buf, int len);
-void process_sq(NVMEState *n, uint16_t sq_id);
+int  process_sq(NVMEState *n, uint16_t sq_id);
 void async_process_cb(void *);
 void incr_cq_tail(NVMEIOCQueue *q);
 
@@ -1195,8 +1203,10 @@ uint32_t nvme_cntrl_read_config(NVMEState *,
     target_phys_addr_t, uint8_t);
 void nvme_cntrl_write_config(NVMEState *,
     target_phys_addr_t, uint32_t, uint8_t);
-
 void enqueue_async_event(NVMEState *n, uint8_t event_type, uint8_t event_info,
     uint8_t log_page);
+int random_chance(int chance);
+void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMECQE* cqe);
+uint8_t is_cq_full(NVMEState *n, uint16_t qid);
 
 #endif /* NVME_H_ */

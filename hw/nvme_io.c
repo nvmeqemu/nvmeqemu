@@ -26,8 +26,7 @@
 
 
 /* queue is full if tail is just behind head. */
-
-static uint8_t is_cq_full(NVMEState *n, uint16_t qid)
+uint8_t is_cq_full(NVMEState *n, uint16_t qid)
 {
     return (n->cq[qid].tail + 1) % n->cq[qid].size == n->cq[qid].head;
 }
@@ -44,20 +43,6 @@ void incr_cq_tail(NVMEIOCQueue *q)
         q->tail = 0;
         q->phase_tag = !q->phase_tag;
     }
-}
-
-static uint8_t abort_command(NVMEState *n, uint16_t sq_id, NVMECmd *sqe)
-{
-    uint16_t i;
-
-    for (i = 0; i < NVME_ABORT_COMMAND_LIMIT; i++) {
-        if (n->sq[sq_id].abort_cmd_id[i] == sqe->cid) {
-            n->sq[sq_id].abort_cmd_id[i] = NVME_EMPTY;
-            n->abort--;
-            return 1;
-        }
-    }
-    return 0;
 }
 
 /* Used to get the required Queue entry for discontig SQ and CQ
@@ -97,7 +82,26 @@ static uint64_t find_discontig_queue_entry(uint32_t pg_size, uint16_t queue_ptr,
     return dma_addr;
 }
 
-void process_sq(NVMEState *n, uint16_t sq_id)
+void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMECQE* cqe)
+{
+    target_phys_addr_t addr;
+    if (cq->phys_contig) {
+        addr = cq->dma_addr + cq->tail * sizeof(*cqe);
+    } else {
+        addr = find_discontig_queue_entry(n->page_size, cq->tail,
+            sizeof(*cqe), cq->dma_addr);
+    }
+    nvme_dma_mem_write(addr, (uint8_t *)cqe, sizeof(*cqe));
+
+    incr_cq_tail(cq);
+    if (cq->irq_enabled) {
+        msix_notify(&(n->dev), cq->vector);
+    } else {
+        LOG_ERR("cq:%d irq not enabled", cq->id);
+    }
+}
+
+int process_sq(NVMEState *n, uint16_t sq_id)
 {
     target_phys_addr_t addr;
     uint16_t cq_id;
@@ -105,15 +109,14 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     NVMECQE cqe;
     NVMEStatusField *sf = (NVMEStatusField *) &cqe.status;
 
-    if (n->sq[sq_id].dma_addr == 0 || n->cq[n->sq[sq_id].cq_id].dma_addr
-        == 0) {
+    if (adm_check_sqid(n, sq_id)) {
         LOG_ERR("Required Submission/Completion Queue does not exist");
         n->sq[sq_id].head = n->sq[sq_id].tail = 0;
-        goto exit;
+        return -1;
     }
     cq_id = n->sq[sq_id].cq_id;
     if (is_cq_full(n, cq_id)) {
-        return;
+        return -1;
     }
     memset(&cqe, 0, sizeof(cqe));
 
@@ -129,13 +132,6 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     }
     nvme_dma_mem_read(addr, (uint8_t *)&sqe, sizeof(sqe));
 
-    if (n->abort) {
-        if (abort_command(n, sq_id, &sqe)) {
-            incr_sq_head(&n->sq[sq_id]);
-            return;
-        }
-    }
-
     incr_sq_head(&n->sq[sq_id]);
 
     if (sq_id == ASQ_ID) {
@@ -143,10 +139,17 @@ void process_sq(NVMEState *n, uint16_t sq_id)
         if (sqe.opcode == NVME_ADM_CMD_ASYNC_EV_REQ &&
             sf->sc == NVME_SC_SUCCESS) {
             /* completion entry is done separately */
-            return;
+            return 0;
         }
     } else if (!n->cq[cq_id].pdid) {
-       /* TODO add support for IO commands with different sizes of Q elements */
+        /* TODO add support for IO commands with different sizes of Q elems */
+        if (n->drop_rate && random_chance(n->drop_rate)) {
+            LOG_NORM("dropping random command:%d", sqe.cid);
+            CommandEntry *ce = qemu_malloc(sizeof(CommandEntry));
+            ce->cid = sqe.cid;
+            QTAILQ_INSERT_TAIL(&(n->sq[sq_id].cmd_list), ce, entry);
+            return 0;
+        }
         nvme_io_command(n, &sqe, &cqe);
     } else if (n->use_aon) {
         /* aon user read/write command */
@@ -164,34 +167,7 @@ void process_sq(NVMEState *n, uint16_t sq_id)
     sf->m = 0;
     sf->dnr = 0; /* TODO add support for dnr */
 
-    /* write cqe to completion queue */
-    if (cq_id == ACQ_ID || n->cq[cq_id].phys_contig) {
-        addr = n->cq[cq_id].dma_addr + n->cq[cq_id].tail * sizeof(cqe);
-    } else {
-        /* PRP implementation */
-        addr = find_discontig_queue_entry(n->page_size, n->cq[cq_id].tail,
-            sizeof(cqe), n->cq[cq_id].dma_addr);
-    }
-    nvme_dma_mem_write(addr, (uint8_t *)&cqe, sizeof(cqe));
+    post_cq_entry(n, &n->cq[cq_id], &cqe);
 
-    incr_cq_tail(&n->cq[cq_id]);
-
-    if (cq_id == ACQ_ID) {
-        /*
-         3.1.9 says: "This queue is always associated
-                 with interrupt vector 0"
-        */
-        msix_notify(&(n->dev), 0);
-        return;
-    }
-
-    if (n->cq[cq_id].irq_enabled) {
-        msix_notify(&(n->dev), n->cq[cq_id].vector);
-    } else {
-        LOG_NORM("kw q: IRQ not enabled for CQ: %d", cq_id);
-    }
-
-exit:
-    return;
-
+    return 0;
 }

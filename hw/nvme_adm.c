@@ -874,7 +874,16 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     case NVME_FEATURE_NUMBER_OF_QUEUES:
         if (sqe->opcode == NVME_ADM_CMD_SET_FEATURES) {
-            n->feature.number_of_queues = sqe->cdw11;
+            uint16_t cqs = sqe->cdw11 >> 16;
+            uint16_t sqs = sqe->cdw11 & 0xffff;
+            if (cqs > NVME_MAX_QID) {
+                cqs = NVME_MAX_QID;
+            }
+            if (sqs > NVME_MAX_QID) {
+                sqs = NVME_MAX_QID;
+            }
+            n->feature.number_of_queues = (((uint32_t)cqs) << 16) | sqs;
+            cqe->cmd_specific = n->feature.number_of_queues;
         } else {
             cqe->cmd_specific = n->feature.number_of_queues;
         }

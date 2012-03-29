@@ -25,6 +25,13 @@
 #include "nvme.h"
 #include "nvme_debug.h"
 
+static uint8_t do_dlfw_prp(NVMEState *n, uint64_t mem_addr, uint64_t *data_size_p,
+    uint64_t *buf_offset, uint8_t *buf);
+static uint8_t do_dlfw_prp_list(NVMEState *n, NVMECmd *cmd,
+    uint64_t *data_size_p, uint64_t *buf_offset, uint8_t *buf);
+static uint32_t fw_get_img(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe,
+					uint8_t *buf, uint32_t sz_fw_buf);
+
 static uint32_t adm_cmd_del_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_del_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
@@ -35,6 +42,8 @@ static uint32_t adm_cmd_abort(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_set_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_get_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t adm_cmd_act_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t adm_cmd_dl_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 
 static uint32_t aon_cmd_sec_send(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
@@ -66,6 +75,8 @@ static adm_command_func * const adm_cmds_funcs[] = {
     [NVME_ADM_CMD_SET_FEATURES] = adm_cmd_set_features,
     [NVME_ADM_CMD_GET_FEATURES] = adm_cmd_get_features,
     [NVME_ADM_CMD_ASYNC_EV_REQ] = adm_cmd_async_ev_req,
+    [NVME_ADM_CMD_ACTIVATE_FW] = adm_cmd_act_fw,
+    [NVME_ADM_CMD_DOWNLOAD_FW] = adm_cmd_dl_fw,
 
     [NVME_ADM_CMD_FORMAT_NVM] = adm_cmd_format_nvm,
     [NVME_ADM_CMD_SECURITY_SEND] = aon_cmd_sec_send,
@@ -495,11 +506,48 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     return 0;
 }
 
+static uint32_t adm_cmd_fw_log_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEFwSlotInfoLog firmware_info;
+    uint32_t len;
+
+    LOG_NORM("%s called", __func__);
+
+    if((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(firmware_info)) {
+        LOG_NORM("%s: not enough memory, needs %ld, has %d bytes.", __func__,
+                sizeof(firmware_info), (((cmd->cdw10) >> 16) & 0x0000FFFF) * 4);
+        NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return 0;
+    }
+    memset(&firmware_info, 0x0, sizeof(firmware_info));
+
+    firmware_info.afi = n->firmware_slot;
+
+    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), sizeof(firmware_info));
+    nvme_dma_mem_write(cmd->prp1, (uint8_t *)&firmware_info, len);
+    if (len < sizeof(firmware_info)) {
+        nvme_dma_mem_write(cmd->prp2,
+            (uint8_t *)((uint8_t *)&firmware_info + len),
+            sizeof(firmware_info) - len);
+    }
+    return 0;
+}
+
 static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     uint32_t len;
     time_t current_seconds;
     NVMESmartLog smart_log;
+
+    if((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(smart_log)) {
+        LOG_NORM("%s: not enough memory, needs %ld, has %d bytes.", __func__,
+                sizeof(smart_log), (((cmd->cdw10) >> 16) & 0x0000FFFF) * 4);
+        NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return 0;
+    }
+
     memset(&smart_log, 0x0, sizeof(smart_log));
     LOG_NORM("%s called", __func__);
     if (cmd->nsid == 0xffffffff) {
@@ -632,6 +680,7 @@ static uint32_t adm_cmd_get_log_page(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return adm_cmd_smart_info(n, cmd, cqe);
         break;
     case NVME_LOG_FW_SLOT_INFORMATION:
+        return adm_cmd_fw_log_info(n, cmd, cqe);
         break;
     default:
         sf->sc = NVME_INVALID_LOG_PAGE;
@@ -970,6 +1019,177 @@ static uint32_t adm_cmd_get_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     res = do_features(n, cmd, cqe);
 
     LOG_NORM("%s(): called", __func__);
+    return res;
+}
+
+static uint32_t adm_cmd_act_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    uint32_t res = 0;
+
+    if (cmd->opcode != NVME_ADM_CMD_ACTIVATE_FW) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    if ((cmd->cdw10 & 0x7) > 7) {
+        LOG_NORM("%s(): Invalid Firmware Slot %d", __func__, cmd->cdw10 & 0x7);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    n->firmware_slot = cmd->cdw10 & 0x7;
+
+    LOG_NORM("%s(): called", __func__);
+    return res;
+}
+
+static uint8_t do_dlfw_prp(NVMEState *n, uint64_t mem_addr, uint64_t *data_size_p,
+    uint64_t *buf_offset, uint8_t *buf)
+{
+    uint64_t data_len;
+
+    if (*data_size_p == 0) {
+        return FAIL;
+    }
+
+    /* Data Len to be written per page basis */
+    data_len = PAGE_SIZE - (mem_addr % PAGE_SIZE);
+    if (data_len > *data_size_p) {
+        data_len = *data_size_p;
+    }
+
+    LOG_DBG("Length of FW Img:%ld", data_len);
+    LOG_DBG("Address for FW Img:%ld", mem_addr);
+    nvme_dma_mem_read(mem_addr, (buf + *buf_offset), data_len);
+
+    *buf_offset = *buf_offset + data_len;
+    *data_size_p = *data_size_p - data_len;
+    return NVME_SC_SUCCESS;
+}
+
+static uint8_t do_dlfw_prp_list(NVMEState *n, NVMECmd *cmd,
+    uint64_t *data_size_p, uint64_t *buf_offset, uint8_t *buf)
+{
+    uint64_t prp_list[512], prp_entries;
+    uint16_t i;
+    uint8_t res = NVME_SC_SUCCESS;
+
+    LOG_DBG("Data Size remaining for FW Image:%ld", *data_size_p);
+
+    /* Logic to find the number of PRP Entries */
+    prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) / PAGE_SIZE);
+    nvme_dma_mem_read(cmd->prp2, (uint8_t *)prp_list,
+        min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
+
+    i = 0;
+    /* Read/Write on PRPList */
+    while (*data_size_p != 0) {
+        if (i == 511 && *data_size_p > PAGE_SIZE) {
+            /* Calculate the actual number of remaining entries */
+            prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) /
+                PAGE_SIZE);
+            nvme_dma_mem_read(prp_list[511], (uint8_t *)prp_list,
+                min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
+            i = 0;
+        }
+
+        res = do_dlfw_prp(n, prp_list[i], data_size_p, buf_offset, buf);
+        LOG_DBG("Data Size remaining for read/write:%ld", *data_size_p);
+        if (res == FAIL) {
+            break;
+        }
+        i++;
+    }
+    return res;
+}
+
+static uint32_t fw_get_img(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe,
+                                     uint8_t *buf, uint32_t sz_fw_buf)
+{
+    uint32_t res = 0;
+    uint64_t data_size = sz_fw_buf;
+    uint64_t buf_offset = 0;
+    int fd;
+    uint64_t offset = 0;
+    uint64_t bytes_written = 0;
+
+    fd = open("nvme_firmware_disk.img",	O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    if (fd < 0) {
+        LOG_ERR("Error while creating the storage");
+        return FAIL;
+    }
+
+    /* Reading PRP1 and PRP2 */
+    res = do_dlfw_prp(n, cmd->prp1, &data_size, &buf_offset, buf);
+    if (res == FAIL) {
+        return FAIL;
+    }
+    if (data_size > 0) {
+        if (data_size <= PAGE_SIZE) {
+            res = do_dlfw_prp(n, cmd->prp2, &data_size, &buf_offset, buf);
+        } else {
+            res = do_dlfw_prp_list(n, cmd, &data_size, &buf_offset, buf);
+        }
+        if (res == FAIL) {
+            return FAIL;
+        }
+    }
+
+    /* Writing to Firmware image file */
+    offset = cmd->cdw11 * 4;
+    if (lseek(fd, (off_t)offset, SEEK_SET) != offset) {
+        LOG_ERR("Error while seeking to offset %ld", offset);
+        return FAIL;
+    }
+
+    LOG_NORM("Writing buffer: size = %d, offset = %ld", sz_fw_buf, offset);
+    bytes_written = write(fd, buf, sz_fw_buf);
+    if (bytes_written != sz_fw_buf) {
+        LOG_ERR("Error while writing: %ld written out of %d", bytes_written,
+                                                                sz_fw_buf);
+        return FAIL;
+    }
+
+    if (close(fd) < 0) {
+        LOG_ERR("Unable to close the nvme disk");
+    }
+
+    return res;
+}
+
+static uint32_t adm_cmd_dl_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    uint32_t res = 0;
+    uint8_t *fw_buf;
+    uint32_t sz_fw_buf = 0;
+
+    LOG_NORM("%s(): called", __func__);
+
+    if (cmd->opcode != NVME_ADM_CMD_DOWNLOAD_FW) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    if (cmd->prp1 == 0) {
+        LOG_NORM("%s(): prp1 absent", __func__);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    sz_fw_buf = cmd->cdw10 * sizeof(uint8_t) * 4;
+    fw_buf = (uint8_t *) qemu_mallocz(sz_fw_buf);
+    if (fw_buf == NULL) {
+        return FAIL;
+    }
+    LOG_NORM("sz_fw_buf = %d\n", sz_fw_buf);
+    res = fw_get_img(n, cmd, cqe, fw_buf, sz_fw_buf);
+
+    qemu_free(fw_buf);
+
     return res;
 }
 

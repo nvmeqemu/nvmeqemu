@@ -491,6 +491,7 @@ typedef struct NVMEState {
     void *bar0;
     int bar0_size;
     uint8_t nvectors;
+    uint8_t firmware_slot;
 
     /* Space for NVME Ctrl Space except doorbells */
     uint8_t *cntrl_reg;
@@ -749,6 +750,19 @@ typedef struct NVMESmartLog {
     uint64_t number_of_error_log_entries[2];
     uint8_t  reserved2[320];
 } NVMESmartLog;
+
+typedef struct NVMEFwSlotInfoLog {
+    uint8_t  afi;
+    uint8_t  reserved1[7];
+    uint8_t  frs1[8];
+    uint8_t  frs2[8];
+    uint8_t  frs3[8];
+    uint8_t  frs4[8];
+    uint8_t  frs5[8];
+    uint8_t  frs6[8];
+    uint8_t  frs7[8];
+    uint8_t  reserved2[448];
+} NVMEFwSlotInfoLog;
 
 enum {
     NVME_LOG_ERROR_INFORMATION   = 0x01,

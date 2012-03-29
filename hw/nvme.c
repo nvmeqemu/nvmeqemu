@@ -7,6 +7,7 @@
  *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
  *    Sravan Kumar Thokala <sravan.kumar.thokala@intel.com>
+ *    Keith Busch <keith.busch@intel.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -26,8 +27,7 @@
 #include "nvme_debug.h"
 #include "range.h"
 
-#define BYTES_PER_BLOCK 512
-#define BYTES_PER_MB (1024 * 1024)
+#define BYTES_PER_MB (1024ULL * 1024ULL)
 
 static const VMStateDescription vmstate_nvme = {
     .name = "nvme",
@@ -46,6 +46,22 @@ static void read_file(NVMEState *, uint8_t);
 static void sq_processing_timer_cb(void *);
 static int nvme_irqcq_empty(NVMEState *, uint32_t);
 static void msix_clr_pending(PCIDevice *, uint32_t);
+
+void enqueue_async_event(NVMEState *n, uint8_t event_type, uint8_t event_info,
+    uint8_t log_page)
+{
+    AsyncEvent *event = (AsyncEvent *)qemu_malloc(sizeof(AsyncEvent));
+
+    event->result.event_type = event_type;
+    event->result.event_info = event_info;
+    event->result.log_page   = log_page;
+
+    QSIMPLEQ_INSERT_TAIL(&(n->async_queue), event, entry);
+
+    qemu_mod_timer(n->async_event_timer,
+            qemu_get_clock_ns(vm_clock) + 20000);
+}
+
 /*********************************************************************
     Function     :    process_doorbell
     Description  :    Processing Doorbell and SQ commands
@@ -70,13 +86,21 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
 
     if (queue_id % 2) {
         /* CQ */
+        uint16_t new_head = val & 0xffff;
         queue_id = (addr - NVME_CQ0HDBL) / QUEUE_BASE_ADDRESS_WIDTH;
-        if (queue_id > NVME_MAX_QID) {
+        if (adm_check_cqid(nvme_dev, queue_id)) {
             LOG_NORM("Wrong CQ ID: %d", queue_id);
+            enqueue_async_event(nvme_dev, event_type_error,
+                event_info_err_invalid_sq, NVME_LOG_ERROR_INFORMATION);
             return;
         }
-
-        nvme_dev->cq[queue_id].head = val & 0xffff;
+        if (new_head >= nvme_dev->cq[queue_id].size) {
+            LOG_NORM("Bad cq head value: %d", new_head);
+            enqueue_async_event(nvme_dev, event_type_error,
+                event_info_err_invalid_db, NVME_LOG_ERROR_INFORMATION);
+            return;
+        }
+        nvme_dev->cq[queue_id].head = new_head;
         /* Reset the P bit if head == tail for all Queues on
          * a specific interrupt vector */
         if (nvme_dev->cq[queue_id].irq_enabled &&
@@ -88,12 +112,21 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
         }
     } else {
         /* SQ */
+        uint16_t new_tail = val & 0xffff;
         queue_id = (addr - NVME_SQ0TDBL) / QUEUE_BASE_ADDRESS_WIDTH;
-        if (queue_id > NVME_MAX_QID) {
+        if (adm_check_sqid(nvme_dev, queue_id)) {
             LOG_NORM("Wrong SQ ID: %d", queue_id);
+            enqueue_async_event(nvme_dev, event_type_error,
+                event_info_err_invalid_sq, NVME_LOG_ERROR_INFORMATION);
             return;
         }
-        nvme_dev->sq[queue_id].tail = val & 0xffff;
+        if (new_tail >= nvme_dev->sq[queue_id].size) {
+            LOG_NORM("Bad sq tail value: %d", new_tail);
+            enqueue_async_event(nvme_dev, event_type_error,
+                event_info_err_invalid_db, NVME_LOG_ERROR_INFORMATION);
+            return;
+        }
+        nvme_dev->sq[queue_id].tail = new_tail;
     }
 
     /*
@@ -276,8 +309,7 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
                  * check enable bit CC.EN
                  */
                 if (nvme_dev->cq[ACQ_ID].dma_addr &&
-                    nvme_dev->sq[ASQ_ID].dma_addr &&
-                    (!nvme_open_storage_disk(nvme_dev))) {
+                    nvme_dev->sq[ASQ_ID].dma_addr) {
                     /* Update CSTS.RDY based on CC.EN and set the phase tag */
                     nvme_dev->cntrl_reg[NVME_CTST] |= CC_EN ;
                     nvme_dev->cq[ACQ_ID].phase_tag = 1;
@@ -485,7 +517,7 @@ static uint32_t nvme_mmio_readl(void *opaque, target_phys_addr_t addr)
     uint32_t rd_val = 0;
     NVMEState *nvme_dev = (NVMEState *) opaque;
 
-   LOG_DBG("%s(): addr = 0x%08x", __func__, (unsigned)addr);
+    LOG_DBG("%s(): addr = 0x%08x", __func__, (unsigned)addr);
 
     /* Check if NVME controller Capabilities was written */
     if (addr < NVME_SQ0TDBL) {
@@ -656,7 +688,6 @@ static void clear_nvme_device(NVMEState *n)
     /* Inflight Operations will not be processed */
     qemu_del_timer(n->sq_processing_timer);
     n->sq_processing_timer_target = 0;
-    nvme_close_storage_disk(n);
 
     /* Saving the Admin Queue States before reset */
     n->aqstate.aqa = nvme_cntrl_read_config(n, NVME_AQA, DWORD);
@@ -670,7 +701,7 @@ static void clear_nvme_device(NVMEState *n)
     read_file(n, NVME_SPACE);
     n->intr_vect = 0;
 
-    for (i = 0; i < NVME_MAX_QS_ALLOCATED; i++) {
+    for (i = 1; i < NVME_MAX_QS_ALLOCATED; i++) {
         memset(&(n->sq[i]), 0, sizeof(NVMEIOSQueue));
         memset(&(n->cq[i]), 0, sizeof(NVMEIOCQueue));
     }
@@ -683,11 +714,15 @@ static void clear_nvme_device(NVMEState *n)
     nvme_cntrl_write_config(n, NVME_ACQ, (uint32_t) n->aqstate.acqa, DWORD);
     nvme_cntrl_write_config(n, NVME_ACQ + 4,
         (uint32_t) (n->aqstate.acqa >> 32), DWORD);
-    n->sq[ASQ_ID].dma_addr = n->aqstate.asqa;
-    n->cq[ACQ_ID].dma_addr = n->aqstate.acqa;
-    n->sq[ASQ_ID].size = (n->aqstate.aqa & 0xfff) + 1;
-    n->cq[ACQ_ID].size = ((n->aqstate.aqa >> 16) & 0xfff) + 1;
 
+    n->sq[ASQ_ID].head = n->sq[ASQ_ID].tail = 0;
+    n->cq[ACQ_ID].head = n->cq[ACQ_ID].tail = 0;
+
+    n->outstanding_asyncs = 0;
+    n->feature.temperature_threshold = NVME_TEMPERATURE + 10;
+    n->temp_warn_issued = 0;
+
+    QSIMPLEQ_INIT(&n->async_queue);
 }
 
 /*********************************************************************
@@ -814,27 +849,27 @@ static void read_identify_cns(NVMEState *n)
 
     LOG_NORM("%s(): called", __func__);
     for (index = 0; index < n->num_namespaces; index++) {
-        n->disk[index].idtfy_ns =
-            qemu_mallocz(sizeof(*(n->disk[index].idtfy_ns)));
-        if (!n->disk[index].idtfy_ns) {
-            LOG_ERR("Identify Space not allocated!");
-            return;
-        }
-        n->disk[index].idtfy_ns->nsze = ((uint64_t)n->ns_size * BYTES_PER_MB) /
+        n->disk[index].idtfy_ns.nsze = (n->ns_size * BYTES_PER_MB) /
             BYTES_PER_BLOCK;
-        n->disk[index].idtfy_ns->ncap = ((uint64_t)n->ns_size * BYTES_PER_MB) /
+        n->disk[index].idtfy_ns.ncap = (n->ns_size * BYTES_PER_MB) /
             BYTES_PER_BLOCK;
-        n->disk[index].idtfy_ns->nuse = 0;
-        n->disk[index].idtfy_ns->nlbaf = NO_LBA_FORMATS;
-        n->disk[index].idtfy_ns->flbas = LBA_FORMAT_INUSE;
+        n->disk[index].idtfy_ns.nuse = 0;
+        n->disk[index].idtfy_ns.nlbaf = NO_LBA_FORMATS;
+        n->disk[index].idtfy_ns.flbas = LBA_FORMAT_INUSE;
+
+        /* meta data capabilities */
+        n->disk[index].idtfy_ns.mc = 1 << 1;
+        n->disk[index].idtfy_ns.dpc = 1 << 4 | 1 << 3 | 1 << 0;
+        n->disk[index].idtfy_ns.dps = 1 << 3 | 3;
+
         /* Filling in the LBA Format structure */
         for (i = 0 ; i <= NO_LBA_FORMATS; i++) {
-            n->disk[index].idtfy_ns->lbafx[i].lbads = LBA_SIZE;
+            n->disk[index].idtfy_ns.lbafx[i].lbads = LBA_SIZE;
         }
-        n->disk[index].ns_util = qemu_mallocz((((uint64_t)n->ns_size *
-            BYTES_PER_MB) / BYTES_PER_BLOCK + 0x7) / 0x8);
-        LOG_NORM("Capacity of namespace %d: %lu",
-            index+1, n->disk[index].idtfy_ns->ncap);
+        n->disk[index].ns_util = qemu_mallocz(((n->ns_size * BYTES_PER_MB) /
+            BYTES_PER_BLOCK + 0x7) / 0x8);
+        LOG_NORM("Capacity of namespace %d: %lu", index+1,
+            n->disk[index].idtfy_ns.ncap);
     }
 
     n->idtfy_ctrl = qemu_mallocz(sizeof(*(n->idtfy_ctrl)));
@@ -894,22 +929,29 @@ static int pci_nvme_init(PCIDevice *pci_dev)
 
     n->start_time = time(NULL);
 
-    if (n->num_namespaces == 0 || n->num_namespaces > 16) {
-        LOG_ERR("bad number of namespaces value:%d, must be between 1 and 16",
-            n->num_namespaces);
+    if (n->num_namespaces == 0 || n->num_namespaces > NVME_MAX_NUM_NAMESPACES) {
+        LOG_ERR("bad number of namespaces value:%u, must be between 1 and %d",
+            n->num_namespaces, NVME_MAX_NUM_NAMESPACES);
         return -1;
     }
-    if (n->ns_size == 0 || n->ns_size > 8192) {
-        LOG_ERR("bad namespace size value:%d, must be between 1 and 8192",
-            n->ns_size);
+    if (n->ns_size == 0 || n->ns_size > NVME_MAX_NAMESPACE_SIZE) {
+        LOG_ERR("bad namespace size value:%u, must be between 1 and %d",
+            n->ns_size, NVME_MAX_NAMESPACE_SIZE);
         return -1;
     }
+
     n->instance = instance++;
     n->disk = (DiskInfo *)qemu_malloc(sizeof(DiskInfo)*n->num_namespaces);
 
     /* Zero out the Queue Datastructures */
     memset(n->cq, 0, sizeof(NVMEIOCQueue) * NVME_MAX_QS_ALLOCATED);
     memset(n->sq, 0, sizeof(NVMEIOSQueue) * NVME_MAX_QS_ALLOCATED);
+
+    /* Initialize the admin queues */
+    n->sq[ASQ_ID].phys_contig = 1;
+    n->cq[ACQ_ID].phys_contig = 1;
+    n->cq[ACQ_ID].irq_enabled = 1;
+    n->cq[ACQ_ID].vector = 0;
 
     /* TODO: pci_conf = n->dev.config; */
     n->nvectors = NVME_MSIX_NVECTORS;
@@ -949,7 +991,7 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     /* Setting up the pointers in NVME address Space
      * TODO
      * These pointers have been defined since
-     * present code uses the older defined strucutres
+     * present code uses the older defined structures
      * which has been replaced by pointers.
      * Once each and every reference is replaced by
      * offset from cntrl_reg, remove these pointers
@@ -971,6 +1013,12 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     n->feature.number_of_queues = ((NVME_MAX_QID - 1) << 16)
         | (NVME_MAX_QID - 1);
 
+    /* Defaulting the temperature threshold, 60 C */
+    n->feature.temperature_threshold = NVME_TEMPERATURE + 10;
+
+    /* Defaulting the async notification to all temperature and threshold */
+    n->feature.asynchronous_event_configuration = 0x3;
+
     for (ret = 0; ret < n->nvectors; ret++) {
         msix_vector_use(&n->dev, ret);
     }
@@ -986,11 +1034,17 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     LOG_DBG("Page Size: %d", n->page_size);
 
     /* Create the Storage Disk */
-    if (nvme_create_storage_disk(n, n->instance)) {
+    if (nvme_create_storage_disks(n)) {
         LOG_NORM("Errors while creating NVME disk");
     }
     n->sq_processing_timer = qemu_new_timer_ns(vm_clock,
         sq_processing_timer_cb, n);
+
+    n->outstanding_asyncs = 0;
+    n->async_event_timer = qemu_new_timer_ns(vm_clock,
+        async_process_cb, n);
+
+    QSIMPLEQ_INIT(&n->async_queue);
 
     return 0;
 }
@@ -1004,7 +1058,6 @@ static int pci_nvme_init(PCIDevice *pci_dev)
 static int pci_nvme_uninit(PCIDevice *pci_dev)
 {
     NVMEState *n = DO_UPCAST(NVMEState, dev, pci_dev);
-    int index;
 
     /* Freeing space allocated for NVME regspace masks except the doorbells */
     qemu_free(n->cntrl_reg);
@@ -1013,10 +1066,7 @@ static int pci_nvme_uninit(PCIDevice *pci_dev)
     qemu_free(n->rws_mask);
     qemu_free(n->used_mask);
     qemu_free(n->idtfy_ctrl);
-
-    for (index = 0; index < n->num_namespaces; index++) {
-        qemu_free(n->disk[index].idtfy_ns);
-    }
+    qemu_free(n->disk);
 
     if (n->sq_processing_timer) {
         if (n->sq_processing_timer_target) {
@@ -1027,8 +1077,12 @@ static int pci_nvme_uninit(PCIDevice *pci_dev)
         n->sq_processing_timer = NULL;
     }
 
-    nvme_close_storage_disk(n);
-    nvme_del_storage_disk(n, n->instance);
+    if (n->async_event_timer) {
+        qemu_free_timer(n->async_event_timer);
+        n->async_event_timer = NULL;
+    }
+
+    nvme_close_storage_disks(n);
     LOG_NORM("Freed NVME device memory");
     return 0;
 }
@@ -1049,6 +1103,32 @@ static PCIDeviceInfo nvme_info = {
         DEFINE_PROP_END_OF_LIST(),
     }
 };
+
+static inline void _nvme_check_size(void)
+{
+    BUILD_BUG_ON(sizeof(NVMEIdentifyController) != 4096);
+    BUILD_BUG_ON(sizeof(NVMEIdentifyNamespace) != 4096);
+    BUILD_BUG_ON(sizeof(NVMESmartLog) != 512);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdFeatures) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdDeleteSQ) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdCreateSQ) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdGetLogPage) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdDeleteCQ) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdCreateCQ) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdIdentify) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdAbort) != 64);
+    BUILD_BUG_ON(sizeof(NVMEAdmCmdAsyncEvRq) != 64);
+    BUILD_BUG_ON(sizeof(NVMECmd) != 64);
+    BUILD_BUG_ON(sizeof(NVMECmdRead) != 64);
+    BUILD_BUG_ON(sizeof(NVMECmdWrite) != 64);
+    BUILD_BUG_ON(sizeof(NVMEIdentifyPowerDesc) != 32);
+    BUILD_BUG_ON(sizeof(NVMECQE) != 16);
+    BUILD_BUG_ON(sizeof(NVMECtrlCap) != 8);
+    BUILD_BUG_ON(sizeof(NVMECtrlConf) != 8);
+    BUILD_BUG_ON(sizeof(NVMEVersion) != 4);
+    BUILD_BUG_ON(sizeof(NVMECtrlStatus) != 4);
+    BUILD_BUG_ON(sizeof(NVMEStatusField) != 2);
+}
 
 /*********************************************************************
     Function     :    nvme_register_devices

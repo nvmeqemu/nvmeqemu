@@ -6,6 +6,7 @@
  *    Krzysztof Wierzbicki <krzysztof.wierzbicki@intel.com>
  *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
+ *    Keith Busch <keith.busch@intel.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -26,7 +27,7 @@
 
 /* queue is full if tail is just behind head. */
 
-static uint8_t is_cq_full(NVMEState *n, uint16_t qid)
+uint8_t is_cq_full(NVMEState *n, uint16_t qid)
 {
     return (((n->cq[qid].tail + 1) % n->cq[qid].size) == n->cq[qid].head);
 }
@@ -38,27 +39,13 @@ static void incr_sq_head(NVMEIOSQueue *q)
         q->id, q->head, q->size);
 }
 
-static void incr_cq_tail(NVMEIOCQueue *q)
+void incr_cq_tail(NVMEIOCQueue *q)
 {
     q->tail += 1;
     if (q->tail >= q->size) {
         q->tail = 0;
         q->phase_tag = !q->phase_tag;
     }
-}
-
-static uint8_t abort_command(NVMEState *n, uint16_t sq_id, NVMECmd *sqe)
-{
-    uint16_t i;
-
-    for (i = 0; i < NVME_ABORT_COMMAND_LIMIT; i++) {
-        if (n->sq[sq_id].abort_cmd_id[i] == sqe->cid) {
-            n->sq[sq_id].abort_cmd_id[i] = NVME_EMPTY;
-            n->abort--;
-            return 1;
-        }
-    }
-    return 0;
 }
 
 /* Used to get the required Queue entry for discontig SQ and CQ
@@ -98,6 +85,25 @@ static uint64_t find_discontig_queue_entry(uint32_t pg_size, uint16_t queue_ptr,
     return dma_addr;
 }
 
+void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMECQE* cqe)
+{
+    target_phys_addr_t addr;
+    if (cq->phys_contig) {
+        addr = cq->dma_addr + cq->tail * sizeof(*cqe);
+    } else {
+        addr = find_discontig_queue_entry(n->page_size, cq->tail,
+            sizeof(*cqe), cq->dma_addr);
+    }
+    nvme_dma_mem_write(addr, (uint8_t *)cqe, sizeof(*cqe));
+
+    incr_cq_tail(cq);
+    if (cq->irq_enabled) {
+        msix_notify(&(n->dev), cq->vector);
+    } else {
+        LOG_ERR("cq:%d irq not enabled", cq->id);
+    }
+}
+
 int process_sq(NVMEState *n, uint16_t sq_id)
 {
     target_phys_addr_t addr;
@@ -131,17 +137,15 @@ int process_sq(NVMEState *n, uint16_t sq_id)
     }
     nvme_dma_mem_read(addr, (uint8_t *)&sqe, sizeof(sqe));
 
-    if (n->abort) {
-        if (abort_command(n, sq_id, &sqe)) {
-            incr_sq_head(&n->sq[sq_id]);
-            return 0;
-        }
-    }
-
     incr_sq_head(&n->sq[sq_id]);
 
     if (sq_id == ASQ_ID) {
         nvme_admin_command(n, &sqe, &cqe);
+        if (sqe.opcode == NVME_ADM_CMD_ASYNC_EV_REQ &&
+            sf->sc == NVME_SC_SUCCESS) {
+            /* completion entry is done separately */
+            return 0;
+        }
     } else {
        /* TODO add support for IO commands with different sizes of Q elements */
         nvme_io_command(n, &sqe, &cqe);
@@ -156,30 +160,7 @@ int process_sq(NVMEState *n, uint16_t sq_id)
     sf->m = 0;
     sf->dnr = 0; /* TODO add support for dnr */
 
-    /* write cqe to completion queue */
-    if (cq_id == ACQ_ID || n->cq[cq_id].phys_contig) {
-        addr = n->cq[cq_id].dma_addr + n->cq[cq_id].tail * sizeof(cqe);
-    } else {
-        /* PRP implementation */
-        addr = find_discontig_queue_entry(n->page_size, n->cq[cq_id].tail,
-            sizeof(cqe), n->cq[cq_id].dma_addr);
-    }
-    nvme_dma_mem_write(addr, (uint8_t *)&cqe, sizeof(cqe));
-
-    incr_cq_tail(&n->cq[cq_id]);
-
-    if (cq_id == ACQ_ID) {
-        /*
-         3.1.9 says: "This queue is always associated
-                 with interrupt vector 0"
-        */
-        msix_notify(&(n->dev), 0);
-        return 0;
-    }
-
-    if (n->cq[cq_id].irq_enabled) {
-        msix_notify(&(n->dev), n->cq[cq_id].vector);
-    }
+    post_cq_entry(n, &n->cq[cq_id], &cqe);
 
     return 0;
 }

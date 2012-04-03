@@ -100,7 +100,7 @@ void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMECQE* cqe)
     if (cq->irq_enabled) {
         msix_notify(&(n->dev), cq->vector);
     } else {
-        LOG_ERR("cq:%d irq not enabled", cq->id);
+        LOG_DBG("cq:%d irq not enabled", cq->id);
     }
 }
 

@@ -291,7 +291,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t p
     if (sqe->opcode == AON_CMD_USER_FLUSH) {
         return NVME_SC_SUCCESS;
     }
-    if (sqe->opcode != AON_CMD_USER_WRITE ||
+    if (sqe->opcode != AON_CMD_USER_WRITE &&
         sqe->opcode != AON_CMD_USER_READ) {
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;

@@ -61,6 +61,7 @@ static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t aon_adm_cmd_delete_nstag(NVMEState *n, NVMECmd *cmd,
     NVMECQE *cqe);
 static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t aon_adm_cmd_inject_err(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 
 typedef uint32_t adm_command_func(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 
@@ -91,6 +92,7 @@ static adm_command_func * const adm_cmds_funcs[] = {
     [AON_ADM_CMD_DELETE_NAMESPACE] = aon_adm_cmd_delete_ns,
     [AON_ADM_CMD_DELETE_NAMESPACE_TAG] = aon_adm_cmd_delete_nstag,
     [AON_ADM_CMD_MODIFY_NAMESPACE] = aon_adm_cmd_mod_ns,
+    [AON_ADM_CMD_INJECT_ERROR] = aon_adm_cmd_inject_err,
     [NVME_ADM_CMD_LAST] = NULL,
 };
 
@@ -634,10 +636,13 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return 0;
     }
+    if (n->injected_available_spare) {
+        smart_log.available_spare = n->injected_available_spare;
+    }
 
-    /* just make up a temperature. 0x143 Kelvin is 50 degrees C. */
-    smart_log.temperature[0] = NVME_TEMPERATURE & 0xff;
-    smart_log.temperature[1] = (NVME_TEMPERATURE >> 8) & 0xff;
+    smart_log.temperature[0] = n->temperature & 0xff;
+    smart_log.temperature[1] = (n->temperature >> 8) & 0xff;
+    smart_log.percentage_used = n->percentage_used;
 
     current_seconds = time(NULL);
     smart_log.power_on_hours[0] = ((current_seconds - n->start_time) / 60) / 60;
@@ -1872,6 +1877,85 @@ static uint32_t aon_adm_cmd_delete_nstag(NVMEState *n, NVMECmd *cmd,
     n->nstags[ntag - 1] = NULL;
     n->protection_domains[pdid - 1]->usage_count--;
 
+    return 0;
+}
+
+static uint32_t aon_adm_cmd_inject_err(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    sf->sc = NVME_SC_SUCCESS;
+    uint32_t cdw10 = cmd->cdw10;
+    uint32_t cdw11 = cmd->cdw11;
+    uint32_t cdw12 = cmd->cdw12;
+
+    NVMEIoError *me, *next;
+
+    if (cmd->opcode != AON_ADM_CMD_INJECT_ERROR || !n->use_aon) {
+        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+
+    switch (cdw10 & 0x7) {
+    case NVME_ERR_CLEAR:
+        n->temperature = NVME_TEMPERATURE;
+        n->percentage_used = 0;
+        n->injected_available_spare = 0;
+        if (n->timeout_error != NULL) {
+            qemu_free(n->timeout_error);
+            n->timeout_error = NULL;
+        }
+        QTAILQ_FOREACH_SAFE(me, &n->media_err_list, entry, next) {
+            QTAILQ_REMOVE(&n->media_err_list, me, entry);
+            qemu_free(me);
+            --n->injected_media_errors;
+        }
+        break;
+    case NVME_ERR_SPARE:
+        n->injected_available_spare = (cdw10 & 0x7f8) >> 3;
+        if (n->injected_available_spare > 100) {
+            n->injected_available_spare = 100;
+        }
+        break;
+    case NVME_ERR_TEMP:
+        n->temperature = (cdw10 & 0x1fff8) >> 3;
+        if (n->temperature >= n->feature.temperature_threshold &&
+                !n->temp_warn_issued) {
+            LOG_NORM("Device:%d triggering temperature threshold event",
+                n->instance);
+            n->temp_warn_issued = 1;
+            enqueue_async_event(n, event_type_smart,
+                event_info_smart_temp_thresh, NVME_LOG_SMART_INFORMATION);
+        }
+        break;
+    case NVME_ERR_WEAR:
+        n->percentage_used = (cdw10 & 0x7f8) >> 3;
+        break;
+    case NVME_ERR_MEDIA:
+        if (n->injected_media_errors < 8) {
+            ++n->injected_media_errors;
+            me = qemu_malloc(sizeof(*me));
+            me->slba = cdw11;
+            me->elba = cdw12;
+            me->io_error = (cdw10 & 0x78) >> 3;
+            QTAILQ_INSERT_TAIL(&n->media_err_list, me, entry);
+        }
+        break;
+    case NVME_ERR_TIME_OUT:
+        if (n->timeout_error == NULL) {
+            me = qemu_malloc(sizeof(*me));
+            n->timeout_error = me;
+        } else {
+            me = n->timeout_error;
+        }
+        me->slba = cdw11;
+        me->elba = cdw12;
+        me->io_error = (cdw10 & 0x18) >> 3;
+        break;
+    default:
+        sf->sc = NVME_SC_INVALID_FIELD;
+        break;
+    }
     return 0;
 }
 

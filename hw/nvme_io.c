@@ -143,14 +143,9 @@ int process_sq(NVMEState *n, uint16_t sq_id)
         }
     } else if (!n->cq[cq_id].pdid) {
         /* TODO add support for IO commands with different sizes of Q elems */
-        if (n->drop_rate && random_chance(n->drop_rate)) {
-            LOG_NORM("dropping random command:%d", sqe.cid);
-            CommandEntry *ce = qemu_malloc(sizeof(CommandEntry));
-            ce->cid = sqe.cid;
-            QTAILQ_INSERT_TAIL(&(n->sq[sq_id].cmd_list), ce, entry);
+        if (nvme_io_command(n, &sqe, &cqe, &n->sq[sq_id]) == NVME_NO_COMPLETE) {
             return 0;
         }
-        nvme_io_command(n, &sqe, &cqe);
     } else if (n->use_aon) {
         /* aon user read/write command */
         nvme_aon_io_command(n, &sqe, &cqe, n->cq[cq_id].pdid);

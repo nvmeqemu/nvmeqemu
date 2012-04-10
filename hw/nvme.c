@@ -730,6 +730,8 @@ static void nvme_set_registry(NVMEState *n)
 static void clear_nvme_device(NVMEState *n)
 {
     uint32_t i = 0;
+    NVMEIoError *me, *next;
+    AsyncEvent *event, *ne;
 
     if (!n) {
         return;
@@ -771,8 +773,26 @@ static void clear_nvme_device(NVMEState *n)
     n->outstanding_asyncs = 0;
     n->feature.temperature_threshold = NVME_TEMPERATURE + 10;
     n->temp_warn_issued = 0;
+    n->percentage_used = 0;
+    n->injected_available_spare = 0;
+    n->temperature = NVME_TEMPERATURE;
+
+    if (n->timeout_error) {
+        qemu_free(n->timeout_error);
+        n->timeout_error = NULL;
+    }
+    QTAILQ_FOREACH_SAFE(me, &n->media_err_list, entry, next) {
+        QTAILQ_REMOVE(&n->media_err_list, me, entry);
+        qemu_free(me);
+        --n->injected_media_errors;
+    }
+    QSIMPLEQ_FOREACH_SAFE(event, &n->async_queue, entry, ne) {
+        QSIMPLEQ_REMOVE(&n->async_queue, event, AsyncEvent, entry);
+        qemu_free(event);
+    }
 
     QSIMPLEQ_INIT(&n->async_queue);
+    QTAILQ_INIT(&n->media_err_list);
 }
 
 /*********************************************************************
@@ -1090,6 +1110,14 @@ static int pci_nvme_init(PCIDevice *pci_dev)
         LOG_NORM("drop rate too high, setting to:%d", NVME_MAX_DROP_RATE);
         n->drop_rate = NVME_MAX_DROP_RATE;
     }
+    if (n->fail_rate != 0 && n->fail_rate < NVME_MIN_FAIL_RATE) {
+        LOG_NORM("I/O fail rate too low, setting to:%d", NVME_MIN_FAIL_RATE);
+        n->fail_rate = NVME_MIN_FAIL_RATE;
+    } else if (n->fail_rate > NVME_MAX_FAIL_RATE) {
+        LOG_NORM("I/O fail rate too high, setting to:%d", NVME_MAX_FAIL_RATE);
+        n->fail_rate = NVME_MAX_FAIL_RATE;
+    }
+
 
     n->instance = instance++;
     n->disk = (DiskInfo **)qemu_mallocz(sizeof(DiskInfo *)*n->num_namespaces);
@@ -1200,11 +1228,17 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     n->sq_processing_timer = qemu_new_timer_ns(vm_clock,
         sq_processing_timer_cb, n);
 
+    n->injected_available_spare = 0;
+    n->percentage_used = 0;
+    n->temperature = NVME_TEMPERATURE;
     n->outstanding_asyncs = 0;
+    n->timeout_error = NULL;
+    n->injected_media_errors = 0;
+
     n->async_event_timer = qemu_new_timer_ns(vm_clock,
         async_process_cb, n);
-
     QSIMPLEQ_INIT(&n->async_queue);
+    QTAILQ_INIT(&n->media_err_list);
 
     return 0;
 }
@@ -1270,6 +1304,7 @@ static PCIDeviceInfo nvme_info = {
         DEFINE_PROP_UINT32("unamespaces", NVMEState, num_user_namespaces, 0),
         DEFINE_PROP_UINT32("brnl", NVMEState, brnl, 0),
         DEFINE_PROP_UINT32("drop", NVMEState, drop_rate, 0),
+        DEFINE_PROP_UINT32("fail", NVMEState, fail_rate, 0),
         DEFINE_PROP_END_OF_LIST(),
     }
 };

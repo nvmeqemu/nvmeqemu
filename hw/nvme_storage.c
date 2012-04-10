@@ -178,7 +178,8 @@ static void nvme_update_stats(NVMEState *n, DiskInfo *disk, uint8_t opcode,
     }
 }
 
-uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
+uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
+    NVMEIOSQueue *sq)
 {
     NVME_rw *e = (NVME_rw *)sqe;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
@@ -233,6 +234,87 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
         LOG_NORM("%s():Namespace not ready", __func__);
         sf->sc = NVME_SC_NS_NOT_READY;
         return FAIL;
+    }
+    if (n->drop_rate && random_chance(n->drop_rate)) {
+        LOG_NORM("dropping random command:%d", sqe->cid);
+        CommandEntry *ce = qemu_malloc(sizeof(CommandEntry));
+        ce->cid = sqe->cid;
+        QTAILQ_INSERT_TAIL(&(sq->cmd_list), ce, entry);
+        return NVME_NO_COMPLETE;
+    }
+    if (n->fail_rate && random_chance(n->fail_rate)) {
+        LOG_NORM("randomly failing command:%d", sqe->cid);
+        sf->sc = NVME_SC_NS_NOT_READY;
+        return FAIL;
+    }
+    if (!QTAILQ_EMPTY(&n->media_err_list)) {
+        NVMEIoError *me;
+        uint64_t elba = e->slba + e->nlb;
+        QTAILQ_FOREACH(me, &n->media_err_list, entry) {
+            if ((me->slba >= e->slba && me->slba <= elba) ||
+                (me->elba >= e->slba && me->elba <= elba)) {
+                switch (me->io_error) {
+                case NVME_MEDIA_ERR_WRITE:
+                    if (sqe->opcode == NVME_CMD_WRITE) {
+                        sf->sc = NVME_WRITE_FAULT;
+                        return 0;
+                    }
+                    break;
+                case NVME_MEDIA_ERR_READ:
+                    if (sqe->opcode == NVME_CMD_READ) {
+                        sf->sc = NVME_UNRECOVERED_READ_ER;
+                        return 0;
+                    }
+                    break;
+                case NVME_MEDIA_ERR_GUARD:
+                    if (((NVMECmdRead *)sqe)->prinfo & 0x4) {
+                        sf->sc = NVME_END_TO_END_GUARD_CHECK_ER;
+                        return 0;
+                    }
+                    break;
+                case NVME_MEDIA_ERR_APP_TAG:
+                    if (((NVMECmdRead *)sqe)->prinfo & 0x2) {
+                        sf->sc = NVME_END_TO_END_APPLICATION_TAG_CHECK_ER;
+                        return 0;
+                    }
+                    break;
+                case NVME_MEDIA_ERR_REF_TAG:
+                    if (((NVMECmdRead *)sqe)->prinfo & 0x1) {
+                        sf->sc = NVME_END_TO_END_REFERENCE_TAG_CHECK_ER;
+                        return 0;
+                    }
+                    break;
+                case NVME_MEDIA_ERR_COMPARE:
+                    if (sqe->opcode != NVME_CMD_COMPARE) {
+                        sf->sc = NVME_COMPARE_FAILURE;
+                        return 0;
+                    }
+                    break;
+                case NVME_MEDIA_ERR_ACCESS:
+                    sf->sc = NVME_ACCESS_DENIED;
+                    return 0;
+                default:
+                    break;
+                }
+            }
+        }
+    }
+    if (n->timeout_error != NULL) {
+        NVMEIoError *me = n->timeout_error;
+        uint64_t elba = e->slba + e->nlb;
+        if (((me->slba >= e->slba && me->slba <= elba) ||
+             (me->elba >= e->slba && me->elba <= elba)) &&
+            ((me->io_error == NVME_TO_WRITE && sqe->opcode == NVME_CMD_WRITE) ||
+             (me->io_error == NVME_TO_READ  && sqe->opcode == NVME_CMD_READ) ||
+             (me->io_error == NVME_TO_IO))) {
+            LOG_NORM("dropping qid:%d command:%d", sq->id, sqe->cid);
+            CommandEntry *ce = qemu_malloc(sizeof(CommandEntry));
+            ce->cid = sqe->cid;
+            QTAILQ_INSERT_TAIL(&(sq->cmd_list), ce, entry);
+            qemu_free(n->timeout_error);
+            n->timeout_error = NULL;
+            return NVME_NO_COMPLETE;
+        }
     }
 
     /* Writing/Reading PRP1 */

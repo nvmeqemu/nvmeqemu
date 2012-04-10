@@ -49,6 +49,8 @@
 #define SUCCESS 0x0
 #define FAIL 0x1
 
+#define NVME_NO_COMPLETE 0xff
+
 /* Macros to check which Interrupt is enabled */
 #define IS_MSIX(n) (n->dev.config[n->dev.msix_cap + 0x03] & 0x80)
 
@@ -115,6 +117,8 @@
 
 #define NVME_MAX_DROP_RATE 10000000
 #define NVME_MIN_DROP_RATE 100
+#define NVME_MAX_FAIL_RATE 10000000
+#define NVME_MIN_FAIL_RATE 100
 
 enum {
     NVME_COMMAND_SET = 0x0,
@@ -250,14 +254,6 @@ typedef struct NVMEIOCQueue {
     uint8_t  phase_tag; /* check spec for Phase Tag details*/
     uint32_t pdid;      /* for aon */
 } NVMEIOCQueue;
-
-/* FIXME*/
-enum {
-    TH_NOT_STARTED = 0,
-    TH_STARTED,
-    TH_STOP,
-    TH_EXIT,
-};
 
 /* Figure 53: Get Features - Feature Identifiers */
 /* Figure 72: Set Features – Feature Identifiers */
@@ -479,6 +475,26 @@ typedef struct NVMEAonStag {
     uint64_t nmp;
 } NVMEAonStag;
 
+enum {
+    NVME_MEDIA_ERR_WRITE    = 0,
+    NVME_MEDIA_ERR_READ     = 1,
+    NVME_MEDIA_ERR_GUARD    = 2,
+    NVME_MEDIA_ERR_APP_TAG  = 3,
+    NVME_MEDIA_ERR_REF_TAG  = 4,
+    NVME_MEDIA_ERR_COMPARE  = 5,
+    NVME_MEDIA_ERR_ACCESS   = 6,
+    NVME_TO_WRITE           = 1,
+    NVME_TO_READ            = 2,
+    NVME_TO_IO              = 3,
+};
+
+typedef struct NVMEIoError {
+    QTAILQ_ENTRY(NVMEIoError) entry;
+    uint32_t slba;
+    uint32_t elba;
+    uint32_t io_error;
+} NVMEIoError;
+
 typedef struct NVMEAonNStag {
     uint32_t pdid;
     uint32_t at;
@@ -514,6 +530,7 @@ typedef struct NVMEState {
     uint64_t user_space;
     uint32_t brnl;
     uint32_t drop_rate;
+    uint32_t fail_rate;
 
     time_t start_time;
 
@@ -548,6 +565,11 @@ typedef struct NVMEState {
 
     uint8_t use_aon; /* flag if aon is enabled */
     uint8_t temp_warn_issued;
+    uint16_t temperature;
+    uint8_t percentage_used;
+    uint8_t injected_available_spare;
+    uint8_t injected_media_errors;
+    uint64_t media_errors;
 
     QEMUTimer *async_event_timer;
 
@@ -555,6 +577,8 @@ typedef struct NVMEState {
     uint16_t outstanding_asyncs;
 
     QSIMPLEQ_HEAD(async_queue, AsyncEvent) async_queue;
+    QTAILQ_HEAD(media_err_list, NVMEIoError) media_err_list;
+    NVMEIoError *timeout_error;
 
     unsigned long *nn_vector;
     unsigned long nn_vector_size;
@@ -717,6 +741,7 @@ enum {
     AON_ADM_CMD_DELETE_NAMESPACE     = 0x98,
     AON_ADM_CMD_DELETE_NAMESPACE_TAG = 0x9c,
     AON_ADM_CMD_MODIFY_NAMESPACE     = 0xa0,
+    AON_ADM_CMD_INJECT_ERROR         = 0xb0,
     NVME_ADM_CMD_LAST,
 };
 
@@ -725,10 +750,22 @@ enum {
     NVME_CMD_FLUSH = 0x00,
     NVME_CMD_WRITE = 0x01,
     NVME_CMD_READ  = 0x02,
+    NVME_CMD_WRITE_UNCORRECTABLE = 0x4,
+    NVME_CMD_COMPARE = 0x5,
+    NVME_CMD_DSM = 0x9,
     AON_CMD_USER_FLUSH = 0x40,
     AON_CMD_USER_WRITE = 0x41,
     AON_CMD_USER_READ = 0x42,
     NVME_CMD_LAST,
+};
+
+enum {
+    NVME_ERR_CLEAR      = 0,
+    NVME_ERR_MEDIA      = 1,
+    NVME_ERR_SPARE      = 2,
+    NVME_ERR_TEMP       = 3,
+    NVME_ERR_WEAR       = 4,
+    NVME_ERR_TIME_OUT   = 5,
 };
 
 typedef struct NVMESmartLog {
@@ -1185,7 +1222,8 @@ int nvme_init_io_thread(NVMEState *n);
 uint8_t nvme_admin_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
 
 /* IO command processing */
-uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
+uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
+    NVMEIOSQueue *sq);
 uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t pdid);
 
 /* Storage Disk */

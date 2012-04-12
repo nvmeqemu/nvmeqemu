@@ -1028,7 +1028,7 @@ static void read_identify_cns(NVMEState *n)
     pstrcpy((char *)n->idtfy_ctrl->mn, sizeof(n->idtfy_ctrl->mn),
         "Qemu NVMe Driver 0xabcd");
     pstrcpy((char *)n->idtfy_ctrl->sn, sizeof(n->idtfy_ctrl->sn), "NVMeQx1000");
-    pstrcpy((char *)n->idtfy_ctrl->fr, sizeof(n->idtfy_ctrl->fr), "012345");
+    pstrcpy((char *)n->idtfy_ctrl->fr, sizeof(n->idtfy_ctrl->fr), "1.0");
 
     /* TODO: fix this hardcoded values !!!
     check identify command for details: spec chapter 5.11 bytes 512 and 513

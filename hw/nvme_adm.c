@@ -1722,7 +1722,7 @@ static uint32_t aon_adm_cmd_create_stag(NVMEState *n, NVMECmd *cmd,
 
     stag = n->stags[c->stag - 1];
     stag->pdid = c->pdid;
-    stag->smps = 1 << (c->smps + 12);
+    stag->smps = 1ULL << (c->smps + 12);
     stag->prp = c->prp1;
     stag->nmp = c->nmp;
 

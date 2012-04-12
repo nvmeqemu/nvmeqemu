@@ -470,7 +470,7 @@ typedef struct NVMEAonPD {
 
 typedef struct NVMEAonStag {
     uint32_t pdid;
-    uint32_t smps;
+    uint64_t smps;
     uint64_t prp;
     uint64_t nmp;
 } NVMEAonStag;

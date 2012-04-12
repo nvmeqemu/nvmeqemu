@@ -503,7 +503,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t p
 
         if (sqe->opcode == AON_CMD_USER_WRITE) {
             nvme_dma_mem_read(mem_addr, mapping_addr, data_len);
-        } else if (sqe->opcode != AON_CMD_USER_READ) {
+        } else if (sqe->opcode == AON_CMD_USER_READ) {
             nvme_dma_mem_write(mem_addr, mapping_addr, data_len);
         }
         mapping_addr += data_len;

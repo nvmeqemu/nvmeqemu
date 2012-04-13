@@ -1038,6 +1038,7 @@ static void read_identify_cns(NVMEState *n)
 
     n->idtfy_ctrl->cqes = 4 << 4 | 4;
     n->idtfy_ctrl->sqes = 6 << 4 | 6;
+    n->idtfy_ctrl->oacs |= 0x2;  // set due to adm_cmd_format_nvm()
 
     n->idtfy_ctrl->vid = 0x8086;
     n->idtfy_ctrl->ssvid = 0x0111;

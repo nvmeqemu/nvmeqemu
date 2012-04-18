@@ -18,8 +18,6 @@
 
 #define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
 
-#define BYTES_PER_BLOCK 512
-
 /* Config FIlE names */
 #define NVME_CONFIG_FILE "NVME_device_NVME_config"
 #define PCI_CONFIG_FILE "NVME_device_PCI_config"
@@ -93,6 +91,7 @@
  * LBA data size=2^9=512
  */
 #define LBA_SIZE 9
+#define BYTES_PER_BLOCK NVME_BLOCK_SIZE(LBA_SIZE)
 
 #define NVME_EMPTY 0xffffffff
 

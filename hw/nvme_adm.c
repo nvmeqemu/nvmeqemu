@@ -268,6 +268,15 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }
+
+    /* Check if IOSQ requested be associated with ACQ */
+    if (c->cqid == 0) {
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        sf->sc = NVME_COMPLETION_QUEUE_INVALID;
+        LOG_NORM("%s(): Invalid cq id: %d association.", __func__, c->cqid);
+        return FAIL;
+    }
+
     /* Invalid SQID, exists*/
     if (!adm_check_sqid(n, c->qid)) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;

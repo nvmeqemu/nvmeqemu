@@ -1002,7 +1002,7 @@ static void read_identify_cns(NVMEState *n)
         /* meta data capabilities */
         disk->idtfy_ns.mc = 1 << 1;
         disk->idtfy_ns.dpc = 1 << 4 | 1 << 3 | 1 << 0;
-        disk->idtfy_ns.dps = 1 << 3 | 3;
+        disk->idtfy_ns.dps = 0; /* user can set this with format */
 
         /* Filling in the LBA Format structure */
         for (i = 0; i <= NO_LBA_FORMATS; i++) {
@@ -1038,7 +1038,7 @@ static void read_identify_cns(NVMEState *n)
 
     n->idtfy_ctrl->cqes = 4 << 4 | 4;
     n->idtfy_ctrl->sqes = 6 << 4 | 6;
-    n->idtfy_ctrl->oacs |= 0x2;  // set due to adm_cmd_format_nvm()
+    n->idtfy_ctrl->oacs |= 0x2;  /* set due to adm_cmd_format_nvm() */
 
     n->idtfy_ctrl->vid = 0x8086;
     n->idtfy_ctrl->ssvid = 0x0111;

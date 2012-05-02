@@ -27,7 +27,6 @@
 #include "nvme_debug.h"
 #include "range.h"
 
-#define BYTES_PER_MB (1024ULL * 1024ULL)
 
 static const VMStateDescription vmstate_nvme = {
     .name = "nvme",
@@ -846,6 +845,7 @@ static void read_identify_cns(NVMEState *n)
 {
     struct power_state_description *power;
     int index, i;
+    int ms_arr[4] = {0, 8, 64, 128};
 
     LOG_NORM("%s(): called", __func__);
     for (index = 0; index < n->num_namespaces; index++) {
@@ -860,11 +860,12 @@ static void read_identify_cns(NVMEState *n)
         /* meta data capabilities */
         n->disk[index].idtfy_ns.mc = 1 << 1;
         n->disk[index].idtfy_ns.dpc = 1 << 4 | 1 << 3 | 1 << 0;
-        n->disk[index].idtfy_ns.dps = 1 << 3 | 3;
+        n->disk[index].idtfy_ns.dps = 0;
 
         /* Filling in the LBA Format structure */
         for (i = 0 ; i <= NO_LBA_FORMATS; i++) {
-            n->disk[index].idtfy_ns.lbafx[i].lbads = LBA_SIZE;
+            n->disk[index].idtfy_ns.lbafx[i].lbads = LBA_SIZE + (i / 4);
+            n->disk[index].idtfy_ns.lbafx[i].ms = ms_arr[i % 4];
         }
         n->disk[index].ns_util = qemu_mallocz(((n->ns_size * BYTES_PER_MB) /
             BYTES_PER_BLOCK + 0x7) / 0x8);

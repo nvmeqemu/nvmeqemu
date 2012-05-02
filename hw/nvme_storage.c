@@ -271,8 +271,6 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 
     nvme_update_stats(n, disk, e->opcode, e->slba, e->nlb);
     return res;
-
-    return res;
 }
 
 /*********************************************************************

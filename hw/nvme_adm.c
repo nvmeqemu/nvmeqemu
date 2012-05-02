@@ -24,6 +24,7 @@
 
 #include "nvme.h"
 #include "nvme_debug.h"
+#include <sys/mman.h>
 
 static uint32_t adm_cmd_del_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
@@ -998,6 +999,9 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     uint32_t dw10 = cmd->cdw10;
     uint32_t nsid, block_size;
     DiskInfo *disk;
+    uint32_t ms, prev_ms;
+    uint64_t blks, msize, prev_blks;
+    char str[64];
 
     sf->sc = NVME_SC_SUCCESS;
     if (cmd->opcode != NVME_ADM_CMD_FORMAT_NVM) {
@@ -1030,11 +1034,72 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     }
 
     LOG_NORM("%s(): called", __func__);
-    block_size = 1 << disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas & 0xf].lbads;
-    memset(disk->ns_util, 0, (disk->idtfy_ns.nsze / block_size + 7) / 8);
+    prev_ms = disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas].ms;
+    prev_blks = disk->idtfy_ns.ncap;
     disk->thresh_warn_issued = 0;
     disk->idtfy_ns.nuse = 0;
     disk->idtfy_ns.flbas = (disk->idtfy_ns.flbas & ~(0xf)) | (dw10 & 0xf);
+    block_size = 1 << disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas & 0xf].lbads;
+
+    disk->idtfy_ns.nsze = (n->ns_size * BYTES_PER_MB) / block_size;
+    disk->idtfy_ns.ncap = disk->idtfy_ns.nsze;
+
+    qemu_free(disk->ns_util);
+    disk->ns_util = qemu_mallocz((disk->idtfy_ns.nsze + 7) / 8);
+    if (disk->ns_util == NULL) {
+        LOG_ERR("Error while reallocating the ns_util");
+        return FAIL;
+    }
+
+    ms = disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas].ms;
+    LOG_DBG("Prev Meta Size = %d, New Meta Size = %d", prev_ms, ms);
+    if ((ms != 0) && (prev_ms != ms)) {
+        blks = disk->idtfy_ns.ncap;
+        msize = blks * ms;
+
+        snprintf(str, sizeof(str), "nvme_meta%d_n%d.img", n->instance, nsid);
+        if (!disk->mfd) {
+            disk->mfd = open
+                (str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+            if (disk->mfd < 0) {
+                LOG_ERR("Error while creating the storage");
+                return FAIL;
+            }
+        } else if ((disk->meta_mapping_addr != NULL) && (prev_ms != 0)) {
+            LOG_DBG("prev_sz = %ld, new_msize = %ld", (prev_ms * prev_blks),
+                msize);
+            if (munmap(disk->meta_mapping_addr, (prev_ms * prev_blks)) < 0) {
+                LOG_ERR("Error while unmaaping meta namespace: %d", disk->nsid);
+                return FAIL;
+            }
+        }
+
+        if (posix_fallocate(disk->mfd, 0, msize) != 0) {
+            LOG_ERR("Error while allocating meta-data space for namespace");
+            return FAIL;
+        }
+
+        disk->meta_mapping_addr = mmap(NULL, msize, PROT_READ | PROT_WRITE,
+            MAP_SHARED, disk->mfd, 0);
+        if (disk->meta_mapping_addr == NULL) {
+            LOG_ERR("Error while opening namespace meta-data: %d", disk->nsid);
+            return FAIL;
+        }
+        disk->meta_mapping_size = msize;
+    } else if ((disk->meta_mapping_addr != NULL) && (ms == 0)) {
+        if (prev_ms != 0) {
+            if (munmap(disk->meta_mapping_addr, (prev_ms * prev_blks)) < 0) {
+                LOG_ERR("Error while unmaaping meta namespace: %d", disk->nsid);
+                return FAIL;
+            }
+            disk->meta_mapping_size = 0;
+            if (close(disk->mfd) < 0) {
+                LOG_ERR("Unable to close the meta disk");
+                return FAIL;
+            }
+            disk->mfd = 0;
+        }
+    }
 
     if (disk->meta_mapping_addr != NULL) {
         memset(disk->meta_mapping_addr, 0xff, disk->meta_mapping_size);

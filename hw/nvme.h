@@ -18,6 +18,7 @@
 #define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
 
 #define BYTES_PER_BLOCK 512
+#define BYTES_PER_MB (1024ULL * 1024ULL)
 
 /* Config FIlE names */
 #define NVME_CONFIG_FILE "NVME_device_NVME_config"

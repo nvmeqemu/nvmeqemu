@@ -979,11 +979,16 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     case NVME_FEATURE_SOFTWARE_PROGRESS_MARKER: /* Set Features only*/
         if (sqe->opcode == NVME_ADM_CMD_GET_FEATURES) {
-            cqe->cmd_specific =
-                n->feature.software_progress_marker;
+            cqe->cmd_specific = n->feature.software_progress_marker;
         }
         break;
 
+    case NVME_FEATURE_FULTON_STRIPING_CFG:
+        if (n->fultondale && sqe->opcode == NVME_ADM_CMD_GET_FEATURES) {
+            cqe->cmd_specific = fultondale_boundary_feature[n->fultondale];
+            break;
+        }
+        /* fall through */
     default:
         LOG_NORM("Unknown feature ID: %d", sqe->fid);
         sf->sc = NVME_SC_INVALID_FIELD;

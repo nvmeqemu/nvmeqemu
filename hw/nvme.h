@@ -27,6 +27,7 @@
 #define PCI_CLASS_STORAGE_EXPRESS 0x010802
 /* Device ID for NVME Device */
 #define NVME_DEV_ID 0x0111
+#define NVME_FD_DEV_ID 0x0112
 /* Maximum number of charachters on a line in any config file */
 #define MAX_CHAR_PER_LINE 250
 /* Width of SQ/CQ base address in bytes*/
@@ -118,6 +119,19 @@
 #define NVME_MIN_DROP_RATE 100
 #define NVME_MAX_FAIL_RATE 10000000
 #define NVME_MIN_FAIL_RATE 100
+
+/* Definitions for fultondale */
+#define ENABLE_DAS		0x01     /* Driver Assisted Striping Enable */
+
+enum {
+    FD_128K_BDRY    = 0x40000 | ENABLE_DAS,
+    FD_64K_BDRY     = 0x30000 | ENABLE_DAS,
+    FD_32K_BDRY     = 0x20000 | ENABLE_DAS,
+    FD_16K_BDRY     = 0x10000 | ENABLE_DAS,
+};
+
+extern uint32_t fultondale_boundary[];
+extern uint32_t fultondale_boundary_feature[];
 
 enum {
     NVME_COMMAND_SET = 0x0,
@@ -269,6 +283,7 @@ enum {
     NVME_FEATURE_WRITE_ATOMICITY          = 0x0a,
     NVME_FEATURE_ASYNCHRONOUS_EVENT_CONF  = 0x0b,
     NVME_FEATURE_SOFTWARE_PROGRESS_MARKER = 0x80, /* Set Features only*/
+    NVME_FEATURE_FULTON_STRIPING_CFG      = 0xf0,
 };
 
 struct nvme_features {
@@ -530,6 +545,7 @@ typedef struct NVMEState {
     uint32_t brnl;
     uint32_t drop_rate;
     uint32_t fail_rate;
+    uint32_t fultondale;
 
     time_t start_time;
 

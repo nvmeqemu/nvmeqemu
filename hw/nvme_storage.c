@@ -229,6 +229,14 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     file_offset = e->slba * nvme_blk_sz;
     mapping_addr = disk->mapping_addr;
 
+    if (n->fultondale) {
+        uint32_t boundary = fultondale_boundary[n->fultondale];
+        if ((file_offset % boundary) + data_size > boundary) {
+            LOG_ERR("%s(): crossed io boundary:%d slba:%ld nlb:%d",
+                __func__, boundary, e->slba, e->nlb);
+        }
+    }
+
     /* Namespace not ready */
     if (mapping_addr == NULL) {
         LOG_NORM("%s():Namespace not ready", __func__);

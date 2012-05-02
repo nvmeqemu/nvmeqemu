@@ -33,6 +33,22 @@ static const VMStateDescription vmstate_nvme = {
     .version_id = 1,
 };
 
+uint32_t fultondale_boundary_feature[] = {
+    0,
+    FD_128K_BDRY,
+    FD_64K_BDRY,
+    FD_32K_BDRY,
+    FD_16K_BDRY,
+};
+
+uint32_t fultondale_boundary[] = {
+    0,
+    0x20000,
+    0x10000,
+    0x8000,
+    0x4000,
+};
+
 /* File Level scope functions */
 static void clear_nvme_device(NVMEState *n);
 static void pci_space_init(PCIDevice *);
@@ -1041,7 +1057,12 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->oacs |= 0x2;  /* set due to adm_cmd_format_nvm() */
 
     n->idtfy_ctrl->vid = 0x8086;
-    n->idtfy_ctrl->ssvid = 0x0111;
+
+    if (n->fultondale) {
+        n->idtfy_ctrl->ssvid = NVME_FD_DEV_ID;
+    } else {
+        n->idtfy_ctrl->ssvid = NVME_DEV_ID;
+    }
     /* number of supported name spaces bytes [516:519] */
     n->idtfy_ctrl->nn = n->num_namespaces - n->num_user_namespaces;
     n->idtfy_ctrl->acl = NVME_ABORT_COMMAND_LIMIT;
@@ -1118,7 +1139,10 @@ static int pci_nvme_init(PCIDevice *pci_dev)
         LOG_NORM("I/O fail rate too high, setting to:%d", NVME_MAX_FAIL_RATE);
         n->fail_rate = NVME_MAX_FAIL_RATE;
     }
-
+    if (n->fultondale != 0 && n->fultondale > ARRAY_SIZE(fultondale_boundary)) {
+        LOG_NORM("Fultondale index to high:%d, set to 1", n->fultondale);
+        n->fultondale = 1;
+    }
 
     n->instance = instance++;
     n->disk = (DiskInfo **)qemu_mallocz(sizeof(DiskInfo *)*n->num_namespaces);
@@ -1143,6 +1167,10 @@ static int pci_nvme_init(PCIDevice *pci_dev)
 
     /* Reading the PCI space from the file */
     read_file(n, PCI_SPACE);
+
+    if (n->fultondale) {
+        pci_config_set_device_id(n->dev.config, NVME_FD_DEV_ID);
+    }
 
     ret = msix_init((struct PCIDevice *)&n->dev,
          n->nvectors, 0, n->bar0_size);
@@ -1306,6 +1334,7 @@ static PCIDeviceInfo nvme_info = {
         DEFINE_PROP_UINT32("brnl", NVMEState, brnl, 0),
         DEFINE_PROP_UINT32("drop", NVMEState, drop_rate, 0),
         DEFINE_PROP_UINT32("fail", NVMEState, fail_rate, 0),
+        DEFINE_PROP_UINT32("fultondale", NVMEState, fultondale, 0),
         DEFINE_PROP_END_OF_LIST(),
     }
 };

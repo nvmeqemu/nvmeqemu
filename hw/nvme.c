@@ -1054,7 +1054,7 @@ static void read_identify_cns(NVMEState *n)
 
     n->idtfy_ctrl->cqes = 4 << 4 | 4;
     n->idtfy_ctrl->sqes = 6 << 4 | 6;
-    n->idtfy_ctrl->oacs |= 0x2;  /* set due to adm_cmd_format_nvm() */
+    n->idtfy_ctrl->oacs = 0x7;
 
     n->idtfy_ctrl->vid = 0x8086;
 
@@ -1098,6 +1098,7 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     static uint32_t instance;
 
     n->start_time = time(NULL);
+    n->s = B;
 
     if (n->num_namespaces == 0 || n->num_namespaces > NVME_MAX_NUM_NAMESPACES) {
         LOG_ERR("bad number of namespaces value:%u, must be between 1 and %d",
@@ -1138,6 +1139,14 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     } else if (n->fail_rate > NVME_MAX_FAIL_RATE) {
         LOG_NORM("I/O fail rate too high, setting to:%d", NVME_MAX_FAIL_RATE);
         n->fail_rate = NVME_MAX_FAIL_RATE;
+    }
+    if (n->security) {
+        char password[] = "Verify!!";
+        LOG_NORM("Enabling NVME security, initalize lock, password: '%s'\n",
+            password);
+        memset(n->password, 0, sizeof(n->password));
+        strncpy(n->password, password, sizeof(n->password));
+        n->s = D;
     }
     if (n->fultondale != 0 && n->fultondale > ARRAY_SIZE(fultondale_boundary)) {
         LOG_NORM("Fultondale index to high:%d, set to 1", n->fultondale);
@@ -1263,6 +1272,7 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     n->outstanding_asyncs = 0;
     n->timeout_error = NULL;
     n->injected_media_errors = 0;
+    n->password_retry = 0;
 
     n->async_event_timer = qemu_new_timer_ns(vm_clock,
         async_process_cb, n);
@@ -1335,6 +1345,7 @@ static PCIDeviceInfo nvme_info = {
         DEFINE_PROP_UINT32("drop", NVMEState, drop_rate, 0),
         DEFINE_PROP_UINT32("fail", NVMEState, fail_rate, 0),
         DEFINE_PROP_UINT32("fultondale", NVMEState, fultondale, 0),
+        DEFINE_PROP_UINT32("security", NVMEState, security, 0),
         DEFINE_PROP_END_OF_LIST(),
     }
 };
@@ -1377,3 +1388,4 @@ static void nvme_register_devices(void)
 }
 
 device_init(nvme_register_devices);
+

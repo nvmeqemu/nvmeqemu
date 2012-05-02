@@ -127,7 +127,10 @@ uint32_t adm_check_cqid(NVMEState *n, uint16_t cqid)
 
 uint32_t adm_check_sqid(NVMEState *n, uint16_t sqid)
 {
-    if (sqid < NVME_MAX_QID && n->sq[sqid].dma_addr && n->sq[sqid].id == sqid) {
+    /* If queue is allocated dma_addr!=NULL and has the same ID */
+    if (sqid > NVME_MAX_QID) {
+        return FAIL;
+    } else if (n->sq[sqid].dma_addr && n->sq[sqid].id == sqid) {
         return 0;
     } else {
         return FAIL;
@@ -136,7 +139,9 @@ uint32_t adm_check_sqid(NVMEState *n, uint16_t sqid)
 
 static uint16_t adm_get_sq(NVMEState *n, uint16_t sqid)
 {
-    if (sqid < NVME_MAX_QID && n->sq[sqid].dma_addr && n->sq[sqid].id == sqid) {
+    if (sqid > NVME_MAX_QID) {
+        return USHRT_MAX;
+    } else if (n->sq[sqid].dma_addr && n->sq[sqid].id == sqid) {
         return sqid;
     } else {
         return USHRT_MAX;

@@ -28,7 +28,7 @@
 /* queue is full if tail is just behind head. */
 uint8_t is_cq_full(NVMEState *n, uint16_t qid)
 {
-    return (n->cq[qid].tail + 1) % n->cq[qid].size == n->cq[qid].head;
+    return (((n->cq[qid].tail + 1) % n->cq[qid].size) == n->cq[qid].head);
 }
 
 static void incr_sq_head(NVMEIOSQueue *q)
@@ -38,7 +38,7 @@ static void incr_sq_head(NVMEIOSQueue *q)
 
 void incr_cq_tail(NVMEIOCQueue *q)
 {
-    q->tail = q->tail + 1;
+    q->tail += 1;
     if (q->tail >= q->size) {
         q->tail = 0;
         q->phase_tag = !q->phase_tag;
@@ -96,8 +96,6 @@ void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMECQE* cqe)
     incr_cq_tail(cq);
     if (cq->irq_enabled) {
         msix_notify(&(n->dev), cq->vector);
-    } else {
-        LOG_ERR("cq:%d irq not enabled", cq->id);
     }
 }
 
@@ -116,6 +114,7 @@ int process_sq(NVMEState *n, uint16_t sq_id)
     }
     cq_id = n->sq[sq_id].cq_id;
     if (is_cq_full(n, cq_id)) {
+        LOG_DBG("CQ %d is full", cq_id);
         return -1;
     }
     memset(&cqe, 0, sizeof(cqe));

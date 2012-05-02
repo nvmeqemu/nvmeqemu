@@ -230,8 +230,8 @@ typedef struct CommandEntry {
 typedef struct NVMEIOSQueue {
     uint16_t id;
     uint16_t cq_id;
-    uint16_t head;
-    uint16_t tail;
+    uint32_t head;
+    uint32_t tail;
     uint16_t prio;
     uint16_t phys_contig;
     uint32_t size;
@@ -243,8 +243,8 @@ typedef struct NVMEIOSQueue {
 typedef struct NVMEIOCQueue {
     uint16_t id;
     uint16_t usage_cnt; /* how many sq is linked */
-    uint16_t head;
-    uint16_t tail;
+    uint32_t head;
+    uint32_t tail;
     uint32_t vector;
     uint16_t irq_enabled;
     uint16_t phys_contig;

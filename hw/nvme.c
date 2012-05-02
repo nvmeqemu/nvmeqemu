@@ -84,17 +84,17 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
     uint32_t queue_id;
     int64_t deadline;
 
-    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x",
-        __func__, (unsigned)addr, val);
 
+    LOG_DBG("%s(): addr(0x%08x) = 0x%08x", __func__, (unsigned)addr, val);
 
     /* Check if it is CQ or SQ doorbell */
     queue_id = (addr - NVME_SQ0TDBL) / sizeof(uint32_t);
 
     if (queue_id % 2) {
-        /* CQ */
         uint16_t new_head = val & 0xffff;
         queue_id = (addr - NVME_CQ0HDBL) / QUEUE_BASE_ADDRESS_WIDTH;
+        LOG_DBG("Processing CQ%d", queue_id);
+
         if (adm_check_cqid(nvme_dev, queue_id)) {
             LOG_NORM("Wrong CQ ID: %d", queue_id);
             enqueue_async_event(nvme_dev, event_type_error,
@@ -107,15 +107,8 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
                 event_info_err_invalid_db, NVME_LOG_ERROR_INFORMATION);
             return;
         }
-        if (is_cq_full(nvme_dev, queue_id)) {
-            /* queue was previously full, schedule submission queue check
-               in case there are commands that couldn't be processed */
-            nvme_dev->sq_processing_timer_target = qemu_get_clock_ns(vm_clock)
-                + 5000;
-            qemu_mod_timer(nvme_dev->sq_processing_timer,
-                nvme_dev->sq_processing_timer_target);
-        }
         nvme_dev->cq[queue_id].head = new_head;
+
         /* Reset the P bit if head == tail for all Queues on
          * a specific interrupt vector */
         if (nvme_dev->cq[queue_id].irq_enabled &&
@@ -125,10 +118,15 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
             msix_clr_pending(&nvme_dev->dev, nvme_dev->cq[queue_id].vector);
 
         }
+
+        LOG_DBG("CQ.head = 0x%04x", nvme_dev->cq[queue_id].head);
+        LOG_DBG("CQ.tail = 0x%04x", nvme_dev->cq[queue_id].tail);
+        LOG_DBG("CQ.size = 0x%04x", nvme_dev->cq[queue_id].size);
     } else {
-        /* SQ */
         uint16_t new_tail = val & 0xffff;
         queue_id = (addr - NVME_SQ0TDBL) / QUEUE_BASE_ADDRESS_WIDTH;
+        LOG_DBG("Processing SQ%d", queue_id);
+
         if (adm_check_sqid(nvme_dev, queue_id)) {
             LOG_NORM("Wrong SQ ID: %d", queue_id);
             enqueue_async_event(nvme_dev, event_type_error,
@@ -143,17 +141,22 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
         }
         nvme_dev->sq[queue_id].tail = new_tail;
 
-        /* Check if the SQ processing routine is scheduled for
-         * execution within 5 uS.If it isn't, make it so
-         */
+        LOG_DBG("SQ.head = 0x%04x", nvme_dev->sq[queue_id].head);
+        LOG_DBG("SQ.tail = 0x%04x", nvme_dev->sq[queue_id].tail);
+        LOG_DBG("SQ.size = 0x%04x", nvme_dev->sq[queue_id].size);
+    }
 
-
-        deadline = qemu_get_clock_ns(vm_clock) + 5000;
-
-        if (nvme_dev->sq_processing_timer_target == 0) {
-            qemu_mod_timer(nvme_dev->sq_processing_timer, deadline);
-            nvme_dev->sq_processing_timer_target = deadline;
-        }
+    /*
+     * Checking for more cmds to execute is desired not only when an SQ doorbell
+     * is rung, but also if something has been removed from a CQ, thus causing
+     * room for more cmds to execute and place CE's into that CQ. Remember
+     * SQ's must stop placing CE's into CQ's when those CQ's are full, but
+     * there may be more SQ elements which need processing */
+    deadline = qemu_get_clock_ns(vm_clock) + 5000;
+    if (nvme_dev->sq_processing_timer_target == 0) {
+        LOG_DBG("Reseting Q timer");
+        qemu_mod_timer(nvme_dev->sq_processing_timer, deadline);
+        nvme_dev->sq_processing_timer_target = deadline;
     }
     return;
 }
@@ -282,8 +285,6 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
     NVMEState *nvme_dev = (NVMEState *) opaque;
     uint32_t var; /* Variable to store reg values locally */
 
-    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x",
-        __func__, (unsigned)addr, val);
     /* Check if NVME controller Capabilities was written */
     if (addr < NVME_SQ0TDBL) {
         switch (addr) {
@@ -566,8 +567,6 @@ static uint32_t nvme_mmio_readl(void *opaque, target_phys_addr_t addr)
 {
     uint32_t rd_val = 0;
     NVMEState *nvme_dev = (NVMEState *) opaque;
-
-    LOG_DBG("%s(): addr = 0x%08x", __func__, (unsigned)addr);
 
     /* Check if NVME controller Capabilities was written */
     if (addr < NVME_SQ0TDBL) {
@@ -1039,6 +1038,7 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->cqes = 4 << 4 | 4;
     n->idtfy_ctrl->sqes = 6 << 4 | 6;
     n->idtfy_ctrl->oacs |= 0x2;  /* set due to adm_cmd_format_nvm() */
+    n->idtfy_ctrl->oacs |= 0x4;
 
     n->idtfy_ctrl->vid = 0x8086;
     n->idtfy_ctrl->ssvid = 0x0111;

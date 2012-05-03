@@ -192,6 +192,11 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     sf->sc = NVME_SC_SUCCESS;
     LOG_DBG("%s(): called", __func__);
 
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c' for IO", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
+        return FAIL;
+    }
     if (sqe->opcode == NVME_CMD_FLUSH) {
         return NVME_SC_SUCCESS;
     }
@@ -228,6 +233,14 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
 
     file_offset = e->slba * nvme_blk_sz;
     mapping_addr = disk->mapping_addr;
+
+    if (n->fultondale) {
+        uint32_t boundary = fultondale_boundary[n->fultondale];
+        if ((file_offset % boundary) + data_size > boundary) {
+            LOG_ERR("%s(): crossed io boundary:%d slba:%ld nlb:%d",
+                __func__, boundary, e->slba, e->nlb);
+        }
+    }
 
     /* Namespace not ready */
     if (mapping_addr == NULL) {
@@ -356,7 +369,8 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     return res;
 }
 
-uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t pdid)
+uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
+    uint32_t pdid)
 {
     NVMEAonUserRwCmd *rw    = (NVMEAonUserRwCmd *)sqe;
     NVMEStatusField  *sf    = (NVMEStatusField *)&cqe->status;
@@ -370,6 +384,11 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t p
     uint64_t data_size, file_offset, prp_offset, prp_index, prp_entries;
     uint16_t blksize;
 
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state for IO", __func__);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
+        return FAIL;
+    }
     if (sqe->opcode == AON_CMD_USER_FLUSH) {
         return NVME_SC_SUCCESS;
     }

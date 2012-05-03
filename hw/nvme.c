@@ -33,6 +33,22 @@ static const VMStateDescription vmstate_nvme = {
     .version_id = 1,
 };
 
+uint32_t fultondale_boundary_feature[] = {
+    0,
+    FD_128K_BDRY,
+    FD_64K_BDRY,
+    FD_32K_BDRY,
+    FD_16K_BDRY,
+};
+
+uint32_t fultondale_boundary[] = {
+    0,
+    0x20000,
+    0x10000,
+    0x8000,
+    0x4000,
+};
+
 /* File Level scope functions */
 static void clear_nvme_device(NVMEState *n);
 static void pci_space_init(PCIDevice *);
@@ -84,17 +100,17 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
     uint32_t queue_id;
     int64_t deadline;
 
+    LOG_DBG("%s(): addr = 0x%08x, val = 0x%08x",
+        __func__, (unsigned)addr, val);
 
-    LOG_DBG("%s(): addr(0x%08x) = 0x%08x", __func__, (unsigned)addr, val);
 
     /* Check if it is CQ or SQ doorbell */
     queue_id = (addr - NVME_SQ0TDBL) / sizeof(uint32_t);
 
     if (queue_id % 2) {
+        /* CQ */
         uint16_t new_head = val & 0xffff;
         queue_id = (addr - NVME_CQ0HDBL) / QUEUE_BASE_ADDRESS_WIDTH;
-        LOG_DBG("Processing CQ%d", queue_id);
-
         if (adm_check_cqid(nvme_dev, queue_id)) {
             LOG_NORM("Wrong CQ ID: %d", queue_id);
             enqueue_async_event(nvme_dev, event_type_error,
@@ -107,8 +123,15 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
                 event_info_err_invalid_db, NVME_LOG_ERROR_INFORMATION);
             return;
         }
+        if (is_cq_full(nvme_dev, queue_id)) {
+            /* queue was previously full, schedule submission queue check
+               in case there are commands that couldn't be processed */
+            nvme_dev->sq_processing_timer_target = qemu_get_clock_ns(vm_clock)
+                + 5000;
+            qemu_mod_timer(nvme_dev->sq_processing_timer,
+                nvme_dev->sq_processing_timer_target);
+        }
         nvme_dev->cq[queue_id].head = new_head;
-
         /* Reset the P bit if head == tail for all Queues on
          * a specific interrupt vector */
         if (nvme_dev->cq[queue_id].irq_enabled &&
@@ -118,15 +141,10 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
             msix_clr_pending(&nvme_dev->dev, nvme_dev->cq[queue_id].vector);
 
         }
-
-        LOG_DBG("CQ.head = 0x%04x", nvme_dev->cq[queue_id].head);
-        LOG_DBG("CQ.tail = 0x%04x", nvme_dev->cq[queue_id].tail);
-        LOG_DBG("CQ.size = 0x%04x", nvme_dev->cq[queue_id].size);
     } else {
+        /* SQ */
         uint16_t new_tail = val & 0xffff;
         queue_id = (addr - NVME_SQ0TDBL) / QUEUE_BASE_ADDRESS_WIDTH;
-        LOG_DBG("Processing SQ%d", queue_id);
-
         if (adm_check_sqid(nvme_dev, queue_id)) {
             LOG_NORM("Wrong SQ ID: %d", queue_id);
             enqueue_async_event(nvme_dev, event_type_error,
@@ -141,22 +159,17 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
         }
         nvme_dev->sq[queue_id].tail = new_tail;
 
-        LOG_DBG("SQ.head = 0x%04x", nvme_dev->sq[queue_id].head);
-        LOG_DBG("SQ.tail = 0x%04x", nvme_dev->sq[queue_id].tail);
-        LOG_DBG("SQ.size = 0x%04x", nvme_dev->sq[queue_id].size);
-    }
+        /* Check if the SQ processing routine is scheduled for
+         * execution within 5 uS.If it isn't, make it so
+         */
 
-    /*
-     * Checking for more cmds to execute is desired not only when an SQ doorbell
-     * is rung, but also if something has been removed from a CQ, thus causing
-     * room for more cmds to execute and place CE's into that CQ. Remember
-     * SQ's must stop placing CE's into CQ's when those CQ's are full, but
-     * there may be more SQ elements which need processing */
-    deadline = qemu_get_clock_ns(vm_clock) + 5000;
-    if (nvme_dev->sq_processing_timer_target == 0) {
-        LOG_DBG("Reseting Q timer");
-        qemu_mod_timer(nvme_dev->sq_processing_timer, deadline);
-        nvme_dev->sq_processing_timer_target = deadline;
+
+        deadline = qemu_get_clock_ns(vm_clock) + 5000;
+
+        if (nvme_dev->sq_processing_timer_target == 0) {
+            qemu_mod_timer(nvme_dev->sq_processing_timer, deadline);
+            nvme_dev->sq_processing_timer_target = deadline;
+        }
     }
     return;
 }
@@ -1037,11 +1050,15 @@ static void read_identify_cns(NVMEState *n)
 
     n->idtfy_ctrl->cqes = 4 << 4 | 4;
     n->idtfy_ctrl->sqes = 6 << 4 | 6;
-    n->idtfy_ctrl->oacs |= 0x2;  /* set due to adm_cmd_format_nvm() */
-    n->idtfy_ctrl->oacs |= 0x4;
+    n->idtfy_ctrl->oacs = 0x7;
 
     n->idtfy_ctrl->vid = 0x8086;
-    n->idtfy_ctrl->ssvid = 0x0111;
+
+    if (n->fultondale) {
+        n->idtfy_ctrl->ssvid = NVME_FD_DEV_ID;
+    } else {
+        n->idtfy_ctrl->ssvid = NVME_DEV_ID;
+    }
     /* number of supported name spaces bytes [516:519] */
     n->idtfy_ctrl->nn = n->num_namespaces - n->num_user_namespaces;
     n->idtfy_ctrl->acl = NVME_ABORT_COMMAND_LIMIT;
@@ -1077,6 +1094,7 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     static uint32_t instance;
 
     n->start_time = time(NULL);
+    n->s = B;
 
     if (n->num_namespaces == 0 || n->num_namespaces > NVME_MAX_NUM_NAMESPACES) {
         LOG_ERR("bad number of namespaces value:%u, must be between 1 and %d",
@@ -1118,7 +1136,18 @@ static int pci_nvme_init(PCIDevice *pci_dev)
         LOG_NORM("I/O fail rate too high, setting to:%d", NVME_MAX_FAIL_RATE);
         n->fail_rate = NVME_MAX_FAIL_RATE;
     }
-
+    if (n->security) {
+        char password[] = "Verify!!";
+        LOG_NORM("Enabling NVME security, initalize lock, password: '%s'\n",
+            password);
+        memset(n->password, 0, sizeof(n->password));
+        strncpy(n->password, password, sizeof(n->password));
+        n->s = D;
+    }
+    if (n->fultondale != 0 && n->fultondale > ARRAY_SIZE(fultondale_boundary)) {
+        LOG_NORM("Fultondale index to high:%d, set to 1", n->fultondale);
+        n->fultondale = 1;
+    }
 
     n->instance = instance++;
     n->disk = (DiskInfo **)qemu_mallocz(sizeof(DiskInfo *)*n->num_namespaces);
@@ -1143,6 +1172,10 @@ static int pci_nvme_init(PCIDevice *pci_dev)
 
     /* Reading the PCI space from the file */
     read_file(n, PCI_SPACE);
+
+    if (n->fultondale) {
+        pci_config_set_device_id(n->dev.config, NVME_FD_DEV_ID);
+    }
 
     ret = msix_init((struct PCIDevice *)&n->dev,
          n->nvectors, 0, n->bar0_size);
@@ -1235,6 +1268,7 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     n->outstanding_asyncs = 0;
     n->timeout_error = NULL;
     n->injected_media_errors = 0;
+    n->password_retry = 0;
 
     n->async_event_timer = qemu_new_timer_ns(vm_clock,
         async_process_cb, n);
@@ -1306,6 +1340,8 @@ static PCIDeviceInfo nvme_info = {
         DEFINE_PROP_UINT32("brnl", NVMEState, brnl, 0),
         DEFINE_PROP_UINT32("drop", NVMEState, drop_rate, 0),
         DEFINE_PROP_UINT32("fail", NVMEState, fail_rate, 0),
+        DEFINE_PROP_UINT32("fultondale", NVMEState, fultondale, 0),
+        DEFINE_PROP_UINT32("security", NVMEState, security, 0),
         DEFINE_PROP_END_OF_LIST(),
     }
 };
@@ -1348,3 +1384,4 @@ static void nvme_register_devices(void)
 }
 
 device_init(nvme_register_devices);
+

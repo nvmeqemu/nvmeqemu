@@ -25,13 +25,6 @@
 #include "nvme.h"
 #include "nvme_debug.h"
 
-static uint8_t do_dlfw_prp(NVMEState *n, uint64_t mem_addr, uint64_t *data_size_p,
-    uint64_t *buf_offset, uint8_t *buf);
-static uint8_t do_dlfw_prp_list(NVMEState *n, NVMECmd *cmd,
-    uint64_t *data_size_p, uint64_t *buf_offset, uint8_t *buf);
-static uint32_t fw_get_img(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe,
-					uint8_t *buf, uint32_t sz_fw_buf);
-
 static uint32_t adm_cmd_del_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t adm_cmd_del_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
@@ -61,7 +54,8 @@ static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 static uint32_t aon_adm_cmd_delete_nstag(NVMEState *n, NVMECmd *cmd,
     NVMECQE *cqe);
 static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
-static uint32_t aon_adm_cmd_inject_err(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
+static uint32_t aon_adm_cmd_inject_err(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe);
 
 typedef uint32_t adm_command_func(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe);
 
@@ -180,8 +174,13 @@ static uint32_t adm_cmd_del_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     /* Log's done to do unit testing */
     LOG_DBG("Delete SQ command for SQID: %u", c->qid);
 
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
+        return FAIL;
+    }
     if (cmd->opcode != NVME_ADM_CMD_DELETE_SQ) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -249,8 +248,13 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     }
 
     if (cmd->opcode != NVME_ADM_CMD_CREATE_SQ) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
         return FAIL;
     }
 
@@ -286,7 +290,8 @@ static uint32_t adm_cmd_alloc_sq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     if (!adm_check_sqid(n, c->qid)) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
-        LOG_NORM("%s():SQID:%d in command already allocated/invalid ID", __func__, c->qid);
+        LOG_NORM("%s():SQID:%d in command already allocated/invalid ID",
+            __func__, c->qid);
         return FAIL;
     }
 
@@ -358,11 +363,15 @@ static uint32_t adm_cmd_del_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_DBG("Delete CQ command for CQID: %u", c->qid);
 
     if (cmd->opcode != NVME_ADM_CMD_DELETE_CQ) {
-        LOG_NORM("%s(): Invalid opcode %d\n", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x\n", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
-
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
+        return FAIL;
+    }
     if (c->qid == 0 || c->qid > NVME_MAX_QID) {
         LOG_NORM("%s():Invalid Queue ID %d", __func__, c->qid);
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
@@ -432,11 +441,15 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_DBG("Create CQ command with PRP2: %lu", c->prp2);
 
     if (cmd->opcode != NVME_ADM_CMD_CREATE_CQ) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
-
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
+        return FAIL;
+    }
     if (c->qid == 0 || c->qid > NVME_MAX_QID) {
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_QUEUE_IDENTIFIER;
@@ -529,7 +542,7 @@ static uint32_t adm_cmd_fw_log_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     LOG_NORM("%s called", __func__);
 
-    if((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(firmware_info)) {
+    if ((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(firmware_info)) {
         LOG_NORM("%s: not enough memory, needs %ld, has %d bytes.", __func__,
                 sizeof(firmware_info), (((cmd->cdw10) >> 16) & 0x0000FFFF) * 4);
         NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
@@ -556,7 +569,7 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     time_t current_seconds;
     NVMESmartLog smart_log;
 
-    if((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(smart_log)) {
+    if ((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(smart_log)) {
         LOG_NORM("%s: not enough memory, needs %ld, has %d bytes.", __func__,
                 sizeof(smart_log), (((cmd->cdw10) >> 16) & 0x0000FFFF) * 4);
         NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
@@ -685,7 +698,7 @@ static uint32_t adm_cmd_get_log_page(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     sf->sc = NVME_SC_SUCCESS;
 
     if (cmd->opcode != NVME_ADM_CMD_GET_LOG_PAGE) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -765,7 +778,7 @@ static uint32_t adm_cmd_identify(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_NORM("%s(): called", __func__);
 
     if (cmd->opcode != NVME_ADM_CMD_IDENTIFY) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -791,6 +804,11 @@ static uint32_t adm_cmd_identify(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
             LOG_NORM("%s(): Invalid namespace id:%d, valid range:1 - %d",
                 __func__, c->nsid, n->num_namespaces);
             sf->sc = NVME_SC_INVALID_NAMESPACE;
+            return FAIL;
+        }
+        if (!security_state_unlocked(n)) {
+            LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
             return FAIL;
         }
         ret = adm_cmd_id_ns(n->disk[cmd->nsid - 1], cmd);
@@ -823,8 +841,13 @@ static uint32_t adm_cmd_abort(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     CommandEntry *ce;
 
     if (cmd->opcode != NVME_ADM_CMD_ABORT) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
         return FAIL;
     }
     if (c->nsid != 0) {
@@ -984,11 +1007,16 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     case NVME_FEATURE_SOFTWARE_PROGRESS_MARKER: /* Set Features only*/
         if (sqe->opcode == NVME_ADM_CMD_GET_FEATURES) {
-            cqe->cmd_specific =
-                n->feature.software_progress_marker;
+            cqe->cmd_specific = n->feature.software_progress_marker;
         }
         break;
 
+    case NVME_FEATURE_FULTON_STRIPING_CFG:
+        if (n->fultondale && sqe->opcode == NVME_ADM_CMD_GET_FEATURES) {
+            cqe->cmd_specific = fultondale_boundary_feature[n->fultondale];
+            break;
+        }
+        /* fall through */
     default:
         LOG_NORM("Unknown feature ID: %d", sqe->fid);
         sf->sc = NVME_SC_INVALID_FIELD;
@@ -1004,8 +1032,13 @@ static uint32_t adm_cmd_set_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     uint32_t res;
 
     if (cmd->opcode != NVME_ADM_CMD_SET_FEATURES) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
         return FAIL;
     }
 
@@ -1021,7 +1054,7 @@ static uint32_t adm_cmd_get_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     uint32_t res;
 
     if (cmd->opcode != NVME_ADM_CMD_GET_FEATURES) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1038,8 +1071,13 @@ static uint32_t adm_cmd_act_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     uint32_t res = 0;
 
     if (cmd->opcode != NVME_ADM_CMD_ACTIVATE_FW) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
         return FAIL;
     }
 
@@ -1055,8 +1093,8 @@ static uint32_t adm_cmd_act_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     return res;
 }
 
-static uint8_t do_dlfw_prp(NVMEState *n, uint64_t mem_addr, uint64_t *data_size_p,
-    uint64_t *buf_offset, uint8_t *buf)
+static uint8_t do_dlfw_prp(NVMEState *n, uint64_t mem_addr,
+    uint64_t *data_size_p, uint64_t *buf_offset, uint8_t *buf)
 {
     uint64_t data_len;
 
@@ -1125,7 +1163,7 @@ static uint32_t fw_get_img(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe,
     uint64_t offset = 0;
     uint64_t bytes_written = 0;
 
-    fd = open("nvme_firmware_disk.img",	O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    fd = open("nvme_firmware_disk.img", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
     if (fd < 0) {
         LOG_ERR("Error while creating the storage");
         return FAIL;
@@ -1179,8 +1217,13 @@ static uint32_t adm_cmd_dl_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_NORM("%s(): called", __func__);
 
     if (cmd->opcode != NVME_ADM_CMD_DOWNLOAD_FW) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
         return FAIL;
     }
 
@@ -1190,7 +1233,7 @@ static uint32_t adm_cmd_dl_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return FAIL;
     }
 
-    sz_fw_buf = cmd->cdw10 * sizeof(uint8_t) * 4;
+    sz_fw_buf = cmd->cdw10 * sizeof(uint8_t)*4;
     fw_buf = (uint8_t *) qemu_mallocz(sz_fw_buf);
     if (fw_buf == NULL) {
         return FAIL;
@@ -1259,8 +1302,13 @@ static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     sf->sc = NVME_SC_SUCCESS;
 
     if (cmd->opcode != NVME_ADM_CMD_ASYNC_EV_REQ) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
         return FAIL;
     }
 
@@ -1290,8 +1338,13 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     sf->sc = NVME_SC_SUCCESS;
     if (cmd->opcode != NVME_ADM_CMD_FORMAT_NVM) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+    if (!security_state_unlocked(n)) {
+        LOG_NORM("%s(): invalid security state '%c'", __func__, n->s);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
         return FAIL;
     }
 
@@ -1353,7 +1406,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     sf->sc = NVME_SC_SUCCESS;
 
     if (cmd->opcode != AON_ADM_CMD_CREATE_NAMESPACE || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1433,7 +1486,7 @@ static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     DiskInfo *disk;
 
     if (cmd->opcode != AON_ADM_CMD_DELETE_NAMESPACE || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1478,7 +1531,6 @@ static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
-    sf->sc = NVME_SC_SUCCESS;
     NVMEIdentifyNamespace ns;
     DiskInfo *disk;
     uint32_t nsid;
@@ -1486,8 +1538,9 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     uint64_t current_bytes;
     uint32_t block_size;
 
+    sf->sc = NVME_SC_SUCCESS;
     if (cmd->opcode != AON_ADM_CMD_MODIFY_NAMESPACE || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1574,18 +1627,219 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     return 0;
 }
 
+static uint32_t nvme_ata_security_send(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe, uint16_t tl)
+{
+    uint8_t payload[4096];
+    char password[32];
+    int len, payload_size, i;
+    uint16_t opcode;
+    uint64_t prp1 = cmd->prp1;
+    uint64_t prp2 = cmd->prp2;
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+
+    payload_size = sizeof(payload);
+    if (tl < payload_size) {
+        LOG_NORM("%s(): bad transfer len:%d need:%d", __func__, tl,
+            payload_size);
+        sf->sc = NVME_SC_CMD_SEQ_ERROR;
+        return FAIL;
+    }
+
+    len = min(PAGE_SIZE - (prp1 % PAGE_SIZE), payload_size);
+    nvme_dma_mem_read(prp1, (uint8_t *)payload, len);
+    if (len != payload_size) {
+        nvme_dma_mem_read(prp2, ((uint8_t *)payload) + len, payload_size -
+            len);
+    }
+
+    opcode = payload[0] | (payload[1] << 8);
+    switch (opcode) {
+    case ATA_SEC_SET_PASSWORD:
+        if (n->s != B) {
+            LOG_NORM("%s(): invalid security state '%c' for set password",
+                __func__, n->s);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
+            if (n->s == E1) {
+                n->s = H;
+            }
+            return FAIL;
+        }
+        LOG_NORM("received password:%s", &payload[2]);
+        memcpy(n->password, &payload[2], sizeof(n->password));
+        n->s = H;
+        break;
+    case ATA_SEC_UNLOCK:
+        if (n->s != D) {
+            LOG_NORM("%s(): invalid security state '%c' for unlock", __func__,
+                n->s);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
+            if (n->s == E1) {
+                n->s = H;
+            }
+            return FAIL;
+        }
+        memcpy(password, &payload[2], sizeof(password));
+        if (memcmp(password, n->password, sizeof(password) != 0)) {
+            LOG_NORM("%s(): password mismatch %s %s", __func__, password,
+                n->password);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
+            if (++n->password_retry >= NVME_MAX_PASSWORD_RETRY) {
+                n->s = G;
+            }
+            return FAIL;
+        }
+        n->s = H;
+        break;
+    case ATA_SEC_ERASE_PREP:
+        if (n->s != H) {
+            LOG_NORM("%s(): invalid security state '%c' for erase prep",
+                __func__, n->s);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
+            if (n->s == E1) {
+                n->s = H;
+            }
+            return FAIL;
+        }
+        n->s = E1;
+        break;
+    case ATA_SEC_ERASE_UNIT:
+        if (n->s != E1) {
+            LOG_NORM("%s(): invalid security state '%c' for erase unit",
+                __func__, n->s);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
+            return FAIL;
+        }
+        n->s = H;
+        memcpy(password, &payload[3], sizeof(password));
+        if (memcmp(password, n->password, sizeof(password) != 0)) {
+            LOG_NORM("%s(): password mismatch", __func__);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
+            return FAIL;
+        }
+        n->s = B;
+        for (i = 0; i < n->num_namespaces; i++) {
+            DiskInfo *disk = n->disk[i];
+            if (disk == NULL) {
+                continue;
+            }
+            disk->thresh_warn_issued = 0;
+            memset(disk->ns_util, 0x0, (disk->idtfy_ns.nsze + 7) / 8);
+            if (disk->meta_mapping_addr != NULL) {
+                memset(disk->meta_mapping_addr, 0xff, disk->meta_mapping_size);
+            }
+        }
+        break;
+    case ATA_SEC_FREEZE_LOCK:
+        if (n->s != H) {
+            LOG_NORM("%s(): invalid security state '%c' for freeze lock",
+                __func__, n->s);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
+            if (n->s == E1) {
+                n->s = H;
+            }
+            return FAIL;
+        }
+        n->s = E1;
+        break;
+    case ATA_SEC_DISABLE_PASSWORD:
+        if (n->s != H) {
+            LOG_NORM("%s(): invalid security state '%c' for disable password",
+                __func__, n->s);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
+            if (n->s == E1) {
+                n->s = H;
+            }
+            return FAIL;
+        }
+        memcpy(&payload[2], password, sizeof(password));
+        if (memcmp(password, n->password, sizeof(password) != 0)) {
+            LOG_NORM("%s(): password mismatch", __func__);
+            sf->sc = NVME_SC_CMD_SEQ_ERROR;
+            return FAIL;
+        }
+        n->s = B;
+        break;
+    default:
+        LOG_NORM("%s(): invalid ata security opcode:%x", __func__, opcode);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        if (n->s == E1) {
+            n->s = H;
+        }
+        return FAIL;
+    }
+    return 0;
+}
+
 static uint32_t aon_cmd_sec_send(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     sf->sc = NVME_SC_SUCCESS;
+    uint8_t secp = cmd->cdw10 >> 24;
+    uint16_t spsp = (cmd->cdw10 >> 8) & 0xffff;
+    uint16_t tl = cmd->cdw11 >> 16;
 
-    if (cmd->opcode != NVME_ADM_CMD_SECURITY_SEND || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+    if (cmd->opcode != NVME_ADM_CMD_SECURITY_SEND) {
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
 
     LOG_NORM("%s(): called", __func__);
+    switch (secp) {
+    case 0xef:
+        switch (spsp) {
+        case 0x0000:
+            return nvme_ata_security_send(n, cmd, cqe, tl);
+        default:
+            LOG_NORM("%s(): secp:%d bad security protocol specific:%d",
+                __func__, secp, spsp);
+            sf->sc = NVME_SC_INVALID_FIELD;
+            return FAIL;
+        }
+        break;
+    default:
+        LOG_NORM("%s(): bad security protocol secp:%d", __func__, secp);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+    return 0;
+}
+
+typedef struct supported_sps_format {
+    uint8_t rsvd[6];
+    uint16_t sp_len;
+    uint8_t supported_sp[];
+} supported_sps_format;
+
+static uint32_t nvme_supported_security_protocols(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe, uint16_t tl)
+{
+    int len, payload_size;
+    uint64_t prp1 = cmd->prp1;
+    uint64_t prp2 = cmd->prp2;
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    static supported_sps_format sps = {
+        .sp_len = 2,
+        .supported_sp = {
+            0x00,
+            0xef,
+        },
+    };
+
+    payload_size = sizeof(sps) + 2;
+    if (tl < payload_size) {
+        LOG_NORM("%s(): bad transfer len:%d need:%d", __func__, tl,
+            payload_size);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    len = min(PAGE_SIZE - (prp1 % PAGE_SIZE), payload_size);
+    nvme_dma_mem_write(prp1, (uint8_t *) &sps, len);
+    if (len != payload_size) {
+        nvme_dma_mem_write(prp2, ((uint8_t *)&sps) + len, payload_size - len);
+    }
     return 0;
 }
 
@@ -1593,14 +1847,34 @@ static uint32_t aon_cmd_sec_recv(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     sf->sc = NVME_SC_SUCCESS;
+    uint8_t secp = cmd->cdw10 >> 24;
+    uint16_t spsp = (cmd->cdw10 >> 8) & 0xffff;
+    uint16_t tl = cmd->cdw11 >> 16;
 
-    if (cmd->opcode != NVME_ADM_CMD_SECURITY_RECV || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+    if (cmd->opcode != NVME_ADM_CMD_SECURITY_RECV) {
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
 
     LOG_NORM("%s(): called", __func__);
+    switch (secp) {
+    case 0x0:
+        switch (spsp) {
+        case 0x0000:
+            return nvme_supported_security_protocols(n, cmd, cqe, tl);
+        default:
+            LOG_NORM("%s(): secp:%d bad security protocol specific:%d",
+                __func__, secp, spsp);
+            sf->sc = NVME_SC_INVALID_FIELD;
+            return FAIL;
+        }
+        break;
+    default:
+        LOG_NORM("%s(): bad security protocol secp:%d", __func__, secp);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
     return 0;
 }
 
@@ -1611,7 +1885,7 @@ static uint32_t aon_adm_cmd_create_pd(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     sf->sc = NVME_SC_SUCCESS;
 
     if (cmd->opcode != AON_ADM_CMD_CREATE_PD || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1641,7 +1915,7 @@ static uint32_t aon_adm_cmd_delete_pd(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     sf->sc = NVME_SC_SUCCESS;
 
     if (cmd->opcode != AON_ADM_CMD_DELETE_PD || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1681,7 +1955,7 @@ static uint32_t aon_adm_cmd_create_stag(NVMEState *n, NVMECmd *cmd,
     sf->sc = NVME_SC_SUCCESS;
 
     if (cmd->opcode != AON_ADM_CMD_CREATE_STAG || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1748,7 +2022,7 @@ static uint32_t aon_adm_cmd_delete_stag(NVMEState *n, NVMECmd *cmd,
     sf->sc = NVME_SC_SUCCESS;
 
     if (cmd->opcode != AON_ADM_CMD_DELETE_STAG || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1803,7 +2077,7 @@ static uint32_t aon_adm_cmd_create_nstag(NVMEState *n, NVMECmd *cmd,
     sf->sc = NVME_SC_SUCCESS;
 
     if (cmd->opcode != AON_ADM_CMD_CREATE_NAMESPACE_TAG || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1864,7 +2138,7 @@ static uint32_t aon_adm_cmd_delete_nstag(NVMEState *n, NVMECmd *cmd,
     sf->sc = NVME_SC_SUCCESS;
 
     if (cmd->opcode != AON_ADM_CMD_DELETE_NAMESPACE_TAG || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -1901,7 +2175,7 @@ static uint32_t aon_adm_cmd_inject_err(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     NVMEIoError *me, *next;
 
     if (cmd->opcode != AON_ADM_CMD_INJECT_ERROR || !n->use_aon) {
-        LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
+        LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }

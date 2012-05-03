@@ -27,6 +27,7 @@
 #define PCI_CLASS_STORAGE_EXPRESS 0x010802
 /* Device ID for NVME Device */
 #define NVME_DEV_ID 0x0111
+#define NVME_FD_DEV_ID 0x0112
 /* Maximum number of charachters on a line in any config file */
 #define MAX_CHAR_PER_LINE 250
 /* Width of SQ/CQ base address in bytes*/
@@ -118,6 +119,19 @@
 #define NVME_MIN_DROP_RATE 100
 #define NVME_MAX_FAIL_RATE 10000000
 #define NVME_MIN_FAIL_RATE 100
+
+/* Definitions for fultondale */
+#define ENABLE_DAS  0x01     /* Driver Assisted Striping Enable */
+
+enum {
+    FD_128K_BDRY    = 0x40000 | ENABLE_DAS,
+    FD_64K_BDRY     = 0x30000 | ENABLE_DAS,
+    FD_32K_BDRY     = 0x20000 | ENABLE_DAS,
+    FD_16K_BDRY     = 0x10000 | ENABLE_DAS,
+};
+
+extern uint32_t fultondale_boundary[];
+extern uint32_t fultondale_boundary_feature[];
 
 enum {
     NVME_COMMAND_SET = 0x0,
@@ -269,6 +283,7 @@ enum {
     NVME_FEATURE_WRITE_ATOMICITY          = 0x0a,
     NVME_FEATURE_ASYNCHRONOUS_EVENT_CONF  = 0x0b,
     NVME_FEATURE_SOFTWARE_PROGRESS_MARKER = 0x80, /* Set Features only*/
+    NVME_FEATURE_FULTON_STRIPING_CFG      = 0xf0,
 };
 
 struct nvme_features {
@@ -500,6 +515,30 @@ typedef struct NVMEAonNStag {
     uint32_t nsid;
 } NVMEAonNStag;
 
+/* Refer to Safford Peak Security Management Addendum */
+typedef enum SecurityState {
+    A = 'A',
+    B = 'B',
+    C = 'C',
+    D = 'D',
+    E1 = 'E',
+    E2 = 'E',
+    F = 'F',
+    G = 'G',
+    H = 'H',
+} SecurityState;
+
+enum  {
+    ATA_SEC_SET_PASSWORD        = 0xf1,
+    ATA_SEC_UNLOCK              = 0xf2,
+    ATA_SEC_ERASE_PREP          = 0xf3,
+    ATA_SEC_ERASE_UNIT          = 0xf4,
+    ATA_SEC_FREEZE_LOCK         = 0xf5,
+    ATA_SEC_DISABLE_PASSWORD    = 0xf6,
+};
+
+#define NVME_MAX_PASSWORD_RETRY 5
+
 typedef struct NVMEState {
     PCIDevice dev;
     int mmio_index;
@@ -530,6 +569,12 @@ typedef struct NVMEState {
     uint32_t brnl;
     uint32_t drop_rate;
     uint32_t fail_rate;
+    uint32_t fultondale;
+    uint32_t security;
+
+    char password[32];
+    uint8_t password_retry;
+    SecurityState s;
 
     time_t start_time;
 
@@ -586,6 +631,14 @@ typedef struct NVMEState {
     NVMEAonStag  **stags;
     NVMEAonNStag **nstags;
 } NVMEState;
+
+static inline int security_state_unlocked(NVMEState *n)
+{
+    if (n->s != B && n->s != H && n->s != F && n->s != E1) {
+        return 0;
+    }
+    return 1;
+}
 
 /* Structure used for default initialization sequence (except doorbell) */
 struct NVMEReg {
@@ -1059,10 +1112,10 @@ typedef struct NVMECmdWrite {
 } NVMECmdWrite;
 
 typedef struct NVMEAonAdmCmdCreateSTag {
-    uint32_t opcode :8;     /* CDW0[0-7]*/
-    uint32_t fuse :3;       /* CDW0[8-10]*/
-    uint32_t res :3;        /* CDW0[11-13]*/
-    uint32_t barriers :2;   /* CDW0[14-15] */
+    uint32_t opcode:8;      /* CDW0[0-7]*/
+    uint32_t fuse:3;        /* CDW0[8-10]*/
+    uint32_t res:3;         /* CDW0[11-13]*/
+    uint32_t barriers:2;    /* CDW0[14-15] */
     uint32_t cdw1;          /* CDW[1]*/
     uint32_t cdw2;          /* CCDW[2-3]*/
     uint32_t cdw3;
@@ -1072,20 +1125,20 @@ typedef struct NVMEAonAdmCmdCreateSTag {
     uint32_t cdw8;
     uint32_t cdw9;
     uint32_t stag;          /* CDW[10]:Steering Tag*/
-    uint32_t smps :8;       /* CDW[11][bits:0-7]: Stag Memory Page Size */
-    uint32_t rstag :1;      /* CDW[11][bit:8]: Replace Stag */
-    uint32_t res1 :23;      /* CDW[11][bit:9:]:reserved*/
+    uint32_t smps:8;        /* CDW[11][bits:0-7]: Stag Memory Page Size */
+    uint32_t rstag:1;       /* CDW[11][bit:8]: Replace Stag */
+    uint32_t res1:23;       /* CDW[11][bit:9:]:reserved*/
     uint64_t nmp;           /* CDW[12:13]:Number of memory pages*/
     uint32_t pdid;          /* CDW[14]:Protection Domain Identifier*/
     uint32_t cdw15;
 } NVMEAonAdmCmdCreateSTag;
 
 typedef struct NVMEAonUserRwCmd {
-    uint32_t opcode :8;     /* CDW0[0-7]*/
-    uint32_t fuse :3;       /* CDW0[8-10]*/
-    uint32_t res :3;        /* CDW0[11-13]*/
-    uint32_t barriers :2;   /* CDW0[14-15] */
-    uint32_t cid :16;       /* CDW0[16-31]*/
+    uint32_t opcode:8;      /* CDW0[0-7]*/
+    uint32_t fuse:3;        /* CDW0[8-10]*/
+    uint32_t res:3;         /* CDW0[11-13]*/
+    uint32_t barriers:2;    /* CDW0[14-15] */
+    uint32_t cid:16;        /* CDW0[16-31]*/
     uint32_t nstag;         /* CDW[1]: Namespace Tag */
     uint64_t res1;          /* CDW[2-3]*/
     uint64_t mdsto;         /* CDW[4-5]: Metadata STag Offset */
@@ -1139,6 +1192,7 @@ enum {
     NVME_SC_FUSED_FAIL        = 0x9,
     NVME_SC_FUSED_MISSING     = 0xa,
     NVME_SC_INVALID_NAMESPACE = 0xb,
+    NVME_SC_CMD_SEQ_ERROR     = 0xc,
     NVME_SC_LBA_RANGE         = 0x80,
     NVME_SC_CAP_EXCEEDED      = 0x81,
     NVME_SC_NS_NOT_READY      = 0x82,
@@ -1223,7 +1277,8 @@ uint8_t nvme_admin_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
 /* IO command processing */
 uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     NVMEIOSQueue *sq);
-uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe, uint32_t pdid);
+uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
+    uint32_t pdid);
 
 /* Storage Disk */
 int nvme_open_storage_disks(NVMEState *n);
@@ -1233,7 +1288,8 @@ int nvme_close_storage_disk(DiskInfo *disk);
 int nvme_create_storage_disks(NVMEState *n);
 int nvme_del_storage_disks(NVMEState *n);
 int nvme_del_storage_disk(DiskInfo *disk);
-int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk, NVMEState *n);
+int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
+    NVMEState *n);
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len);
 void nvme_dma_mem_write(target_phys_addr_t addr, uint8_t *buf, int len);

@@ -99,6 +99,14 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
                 event_info_err_invalid_db, NVME_LOG_ERROR_INFORMATION);
             return;
         }
+        if (is_cq_full(nvme_dev, queue_id)) {
+            /* queue was previously full, schedule submission queue check
+               in case there are commands that couldn't be processed */
+            nvme_dev->sq_processing_timer_target = qemu_get_clock_ns(vm_clock)
+                + 5000;
+            qemu_mod_timer(nvme_dev->sq_processing_timer,
+                nvme_dev->sq_processing_timer_target);
+        }
         nvme_dev->cq[queue_id].head = new_head;
         /* Reset the P bit if head == tail for all Queues on
          * a specific interrupt vector */
@@ -126,18 +134,18 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
             return;
         }
         nvme_dev->sq[queue_id].tail = new_tail;
-    }
 
-    /*
-     * Checking for more cmds to execute is desired not only when an SQ doorbell
-     * is rung, but also if something has been removed from a CQ, thus causing
-     * room for more cmds to execute and place CE's into that CQ. Remember
-     * SQ's must stop placing CE's into CQ's when those CQ's are full, but
-     * there may be more SQ elements which need processing */
-    deadline = qemu_get_clock_ns(vm_clock) + 5000;
-    if (nvme_dev->sq_processing_timer_target == 0) {
-        qemu_mod_timer(nvme_dev->sq_processing_timer, deadline);
-        nvme_dev->sq_processing_timer_target = deadline;
+        /* Check if the SQ processing routine is scheduled for
+         * execution within 5 uS.If it isn't, make it so
+         */
+
+
+        deadline = qemu_get_clock_ns(vm_clock) + 5000;
+
+        if (nvme_dev->sq_processing_timer_target == 0) {
+            qemu_mod_timer(nvme_dev->sq_processing_timer, deadline);
+            nvme_dev->sq_processing_timer_target = deadline;
+        }
     }
     return;
 }

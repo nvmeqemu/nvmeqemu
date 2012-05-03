@@ -1000,7 +1000,7 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     uint32_t nsid, block_size;
     DiskInfo *disk;
     uint32_t ms, prev_ms;
-    uint64_t blks, msize, prev_blks;
+    uint64_t blks, msize, prev_msize, prev_blks;
     char str[64];
 
     sf->sc = NVME_SC_SUCCESS;
@@ -1053,10 +1053,10 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     ms = disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas].ms;
     LOG_DBG("Prev Meta Size = %d, New Meta Size = %d", prev_ms, ms);
-    if ((ms != 0) && (prev_ms != ms)) {
-        blks = disk->idtfy_ns.ncap;
-        msize = blks * ms;
-
+    blks = disk->idtfy_ns.ncap;
+    msize = blks * ms;
+    prev_msize = prev_ms * prev_blks;
+    if ((ms != 0) && (prev_msize != msize)) {
         snprintf(str, sizeof(str), "nvme_meta%d_n%d.img", n->instance, nsid);
         if (!disk->mfd) {
             disk->mfd = open
@@ -1065,13 +1065,13 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
                 LOG_ERR("Error while creating the storage");
                 return FAIL;
             }
-        } else if ((disk->meta_mapping_addr != NULL) && (prev_ms != 0)) {
-            LOG_DBG("prev_sz = %ld, new_msize = %ld", (prev_ms * prev_blks),
-                msize);
-            if (munmap(disk->meta_mapping_addr, (prev_ms * prev_blks)) < 0) {
+        } else if ((disk->meta_mapping_addr != NULL) && (prev_msize != 0)) {
+            LOG_DBG("prev_sz = %ld, new_msize = %ld", prev_msize, msize);
+            if (munmap(disk->meta_mapping_addr, prev_msize) < 0) {
                 LOG_ERR("Error while unmaaping meta namespace: %d", disk->nsid);
                 return FAIL;
             }
+            disk->meta_mapping_addr = NULL;
         }
 
         if (posix_fallocate(disk->mfd, 0, msize) != 0) {
@@ -1087,12 +1087,14 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         }
         disk->meta_mapping_size = msize;
     } else if ((disk->meta_mapping_addr != NULL) && (ms == 0)) {
+        LOG_DBG("Unmapping, (prev msz, msz) = (%ld, %ld)", prev_msize, msize);
         if (prev_ms != 0) {
-            if (munmap(disk->meta_mapping_addr, (prev_ms * prev_blks)) < 0) {
+            if (munmap(disk->meta_mapping_addr, prev_msize) < 0) {
                 LOG_ERR("Error while unmaaping meta namespace: %d", disk->nsid);
                 return FAIL;
             }
             disk->meta_mapping_size = 0;
+            disk->meta_mapping_addr = NULL;
             if (close(disk->mfd) < 0) {
                 LOG_ERR("Unable to close the meta disk");
                 return FAIL;
@@ -1100,11 +1102,9 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
             disk->mfd = 0;
         }
     }
-
     if (disk->meta_mapping_addr != NULL) {
         memset(disk->meta_mapping_addr, 0xff, disk->meta_mapping_size);
     }
-
     return 0;
 }
 

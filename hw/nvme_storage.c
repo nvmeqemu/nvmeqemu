@@ -190,19 +190,20 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
     sf->sc = NVME_SC_SUCCESS;
     LOG_DBG("%s(): called", __func__);
 
+    /* As of NVMe spec rev 1.0b "All NVM cmds use the CMD.DW1 (NSID) field".
+     * Thus all NVM cmd set cmds must check for illegal namespaces up front */
+    if (e->nsid == 0 || (e->nsid > n->idtfy_ctrl->nn)) {
+        LOG_NORM("%s(): Invalid nsid:%u", __func__, e->nsid);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+
     if (sqe->opcode == NVME_CMD_FLUSH) {
         return NVME_SC_SUCCESS;
     }
-    if ((sqe->opcode != NVME_CMD_READ) &&
-        (sqe->opcode != NVME_CMD_WRITE)) {
+    if ((sqe->opcode != NVME_CMD_READ) && (sqe->opcode != NVME_CMD_WRITE)) {
         LOG_NORM("%s():Wrong IO opcode:\t\t0x%02x", __func__, sqe->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
-        return FAIL;
-    }
-    if (e->nsid == 0 || (e->nsid > n->idtfy_ctrl->nn)) {
-        /* Check for valid values of namespace ID for IO R/W */
-        LOG_NORM("%s(): Invalid nsid:%d", __func__, e->nsid);
-        sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }
 

@@ -996,26 +996,19 @@ static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    DiskInfo *disk;
+    uint64_t old_size;
     uint32_t dw10 = cmd->cdw10;
     uint32_t nsid, block_size;
-    DiskInfo *disk;
-    uint32_t ms, prev_ms;
-    uint64_t blks, msize, prev_msize, prev_blks;
-    char str[64];
+    uint8_t pil = (dw10 >> 5) & 0x8;
+    uint8_t pi = (dw10 >> 5) & 0x7;
+    uint8_t meta_loc = dw10 & 0x10;
+    uint8_t lba_idx = dw10 & 0xf;
 
     sf->sc = NVME_SC_SUCCESS;
     if (cmd->opcode != NVME_ADM_CMD_FORMAT_NVM) {
         LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
-        return FAIL;
-    }
-
-    /* check for invalid settings */
-    if (dw10 >> 4 & 0x1f) {
-        /* meta-data or protection information set, not supported yet */
-        LOG_NORM("%s(): Invalid format %x, meta-data specified", __func__,
-            dw10);
-        sf->sc = NVME_INVALID_FORMAT;
         return FAIL;
     }
 
@@ -1027,84 +1020,71 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     }
 
     disk = &n->disk[nsid - 1];
-    if ((dw10 & 0xf) > disk->idtfy_ns.nlbaf) {
+    if ((lba_idx) > disk->idtfy_ns.nlbaf) {
         LOG_NORM("%s(): Invalid format %x, lbaf out of range", __func__, dw10);
         sf->sc = NVME_INVALID_FORMAT;
         return FAIL;
     }
-
-    LOG_NORM("%s(): called", __func__);
-    prev_ms = disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas].ms;
-    prev_blks = disk->idtfy_ns.ncap;
-    disk->thresh_warn_issued = 0;
-    disk->idtfy_ns.nuse = 0;
-    disk->idtfy_ns.flbas = (disk->idtfy_ns.flbas & ~(0xf)) | (dw10 & 0xf);
-    block_size = 1 << disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas & 0xf].lbads;
-
-    disk->idtfy_ns.nsze = (n->ns_size * BYTES_PER_MB) / block_size;
-    disk->idtfy_ns.ncap = disk->idtfy_ns.nsze;
-
-    qemu_free(disk->ns_util);
-    disk->ns_util = qemu_mallocz((disk->idtfy_ns.nsze + 7) / 8);
-    if (disk->ns_util == NULL) {
-        LOG_ERR("Error while reallocating the ns_util");
+    if (pi) {
+        if (pil && !(disk->idtfy_ns.dpc & 0x10)) {
+            LOG_NORM("%s(): pi requested as last 8 bytes, dpc:%x",
+                __func__, disk->idtfy_ns.dpc);
+            sf->sc = NVME_INVALID_FORMAT;
+            return FAIL;
+        }
+        if (!pil && !(disk->idtfy_ns.dpc & 0x8)) {
+            LOG_NORM("%s(): pi requested as first 8 bytes, dpc:%x",
+                __func__, disk->idtfy_ns.dpc);
+            sf->sc = NVME_INVALID_FORMAT;
+            return FAIL;
+        }
+        if (!((disk->idtfy_ns.dpc & 0x7) & (1 << (pi - 1)))) {
+            LOG_NORM("%s(): Invalid pi type:%d, dpc:%x", __func__,
+                pi, disk->idtfy_ns.dpc);
+            sf->sc = NVME_INVALID_FORMAT;
+            return FAIL;
+        }
+    }
+    if (meta_loc && disk->idtfy_ns.lbafx[lba_idx].ms &&
+            !(disk->idtfy_ns.mc & 1)) {
+        LOG_NORM("%s(): Invalid meta location:%x, mc:%x", __func__,
+            meta_loc, disk->idtfy_ns.mc);
+        sf->sc = NVME_INVALID_FORMAT;
+        return FAIL;
+    }
+    if (!meta_loc && disk->idtfy_ns.lbafx[lba_idx].ms &&
+            !(disk->idtfy_ns.mc & 2)) {
+        LOG_NORM("%s(): Invalid meta location:%x, mc:%x", __func__,
+            meta_loc, disk->idtfy_ns.mc);
+        sf->sc = NVME_INVALID_FORMAT;
         return FAIL;
     }
 
-    ms = disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas].ms;
-    LOG_DBG("Prev Meta Size = %d, New Meta Size = %d", prev_ms, ms);
-    blks = disk->idtfy_ns.ncap;
-    msize = blks * ms;
-    prev_msize = prev_ms * prev_blks;
-    if ((ms != 0) && (prev_msize != msize)) {
-        snprintf(str, sizeof(str), "nvme_meta%d_n%d.img", n->instance, nsid);
-        if (!disk->mfd) {
-            disk->mfd = open
-                (str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-            if (disk->mfd < 0) {
-                LOG_ERR("Error while creating the storage");
-                return FAIL;
-            }
-        } else if ((disk->meta_mapping_addr != NULL) && (prev_msize != 0)) {
-            LOG_DBG("prev_sz = %ld, new_msize = %ld", prev_msize, msize);
-            if (munmap(disk->meta_mapping_addr, prev_msize) < 0) {
-                LOG_ERR("Error while unmaaping meta namespace: %d", disk->nsid);
-                return FAIL;
-            }
-            disk->meta_mapping_addr = NULL;
-        }
-
-        if (posix_fallocate(disk->mfd, 0, msize) != 0) {
-            LOG_ERR("Error while allocating meta-data space for namespace");
-            return FAIL;
-        }
-
-        disk->meta_mapping_addr = mmap(NULL, msize, PROT_READ | PROT_WRITE,
-            MAP_SHARED, disk->mfd, 0);
-        if (disk->meta_mapping_addr == NULL) {
-            LOG_ERR("Error while opening namespace meta-data: %d", disk->nsid);
-            return FAIL;
-        }
-        disk->meta_mapping_size = msize;
-    } else if ((disk->meta_mapping_addr != NULL) && (ms == 0)) {
-        LOG_DBG("Unmapping, (prev msz, msz) = (%ld, %ld)", prev_msize, msize);
-        if (prev_ms != 0) {
-            if (munmap(disk->meta_mapping_addr, prev_msize) < 0) {
-                LOG_ERR("Error while unmaaping meta namespace: %d", disk->nsid);
-                return FAIL;
-            }
-            disk->meta_mapping_size = 0;
-            disk->meta_mapping_addr = NULL;
-            if (close(disk->mfd) < 0) {
-                LOG_ERR("Unable to close the meta disk");
-                return FAIL;
-            }
-            disk->mfd = 0;
-        }
+    if (nvme_close_storage_disk(disk)) {
+        return FAIL;
     }
-    if (disk->meta_mapping_addr != NULL) {
-        memset(disk->meta_mapping_addr, 0xff, disk->meta_mapping_size);
+
+    old_size = disk->idtfy_ns.nsze * (1 << disk->idtfy_ns.lbafx[
+        disk->idtfy_ns.flbas & 0xf].lbads);
+    block_size = 1 << disk->idtfy_ns.lbafx[lba_idx].lbads;
+
+    LOG_NORM("%s(): called, previous: flbas:%x ds:%d ms:%d dps:%x"\
+             "new: flbas:%x ds:%d ms:%d dpc:%x", __func__, disk->idtfy_ns.flbas,
+             disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas & 0xf].lbads,
+             disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas & 0xf].ms,
+             lba_idx | meta_loc, disk->idtfy_ns.lbafx[lba_idx].lbads,
+             disk->idtfy_ns.lbafx[lba_idx].ms);
+
+    disk->idtfy_ns.nuse = 0;
+    disk->idtfy_ns.flbas = lba_idx | meta_loc;
+    disk->idtfy_ns.nsze = old_size / block_size;
+    disk->idtfy_ns.ncap = disk->idtfy_ns.nsze;
+    disk->idtfy_ns.dps = pil | pi;
+
+    if (nvme_create_storage_disk(n->instance, nsid, disk, n)) {
+        return FAIL;
     }
+
     return 0;
 }
 

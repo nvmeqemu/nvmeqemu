@@ -186,6 +186,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
     uint8_t *mapping_addr;
     uint32_t nvme_blk_sz;
     DiskInfo *disk;
+    uint8_t lba_idx;
 
     sf->sc = NVME_SC_SUCCESS;
     LOG_DBG("%s(): called", __func__);
@@ -218,12 +219,32 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
         sf->sc = NVME_SC_CAP_EXCEEDED;
         return FAIL;
     }
+    lba_idx = disk->idtfy_ns.flbas & 0xf;
 
     /* Read in the command */
-    nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns.lbafx[
-        disk->idtfy_ns.flbas].lbads);
+    nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns.lbafx[lba_idx].lbads);
     LOG_DBG("NVME Block size: %u", nvme_blk_sz);
     data_size = (e->nlb + 1) * nvme_blk_sz;
+
+    if (disk->idtfy_ns.flbas & 0x10) {
+        if (e->mptr != 0) {
+            LOG_ERR("%s(): invalid meta-data for extended lba", __func__);
+            sf->sc = NVME_SC_INVALID_FIELD;
+            return FAIL;
+        }
+        data_size += (disk->idtfy_ns.lbafx[lba_idx].ms * (e->nlb + 1));
+    } else if (e->mptr && !(disk->idtfy_ns.lbafx[lba_idx].ms)) {
+        LOG_ERR("%s(): invalid meta-data for format", __func__);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+    if (n->idtfy_ctrl->mdts && data_size > PAGE_SIZE *
+                (1 << (n->idtfy_ctrl->mdts))) {
+        LOG_ERR("%s(): data size:%ld exceeds max:%ld", __func__,
+            data_size, ((uint64_t)PAGE_SIZE) * (1 << (n->idtfy_ctrl->mdts)));
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
 
     file_offset = e->slba * nvme_blk_sz;
     mapping_addr = disk->mapping_addr;
@@ -258,7 +279,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
         unsigned int ms, meta_offset, meta_size;
         uint8_t *meta_mapping_addr;
 
-        ms = disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas].ms;
+        ms = disk->idtfy_ns.lbafx[lba_idx].ms;
         meta_offset = e->slba * ms;
         meta_size = (e->nlb + 1) * ms;
         meta_mapping_addr = disk->meta_mapping_addr + meta_offset;
@@ -274,6 +295,44 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
     return res;
 }
 
+static int nvme_create_meta_disk(uint32_t instance, uint32_t nsid,
+    DiskInfo *disk)
+{
+    uint32_t ms;
+
+    ms = disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas].ms;
+    if (ms != 0 && !(disk->idtfy_ns.flbas & 0x10)) {
+        char str[64];
+        uint64_t blks, msize;
+
+        snprintf(str, sizeof(str), "nvme_meta%d_n%d.img", instance, nsid);
+        blks = disk->idtfy_ns.ncap;
+        msize = blks * ms;
+
+        disk->mfd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+        if (disk->mfd < 0) {
+            LOG_ERR("Error while creating the meta-storage");
+            return FAIL;
+        }
+        if (posix_fallocate(disk->mfd, 0, msize) != 0) {
+            LOG_ERR("Error while allocating meta-data space for namespace");
+            return FAIL;
+        }
+        disk->meta_mapping_addr = mmap(NULL, msize, PROT_READ | PROT_WRITE,
+            MAP_SHARED, disk->mfd, 0);
+        if (disk->meta_mapping_addr == NULL) {
+            LOG_ERR("Error while opening namespace meta-data: %d", disk->nsid);
+            return FAIL;
+        }
+        disk->meta_mapping_size = msize;
+        memset(disk->meta_mapping_addr, 0xff, msize);
+    } else {
+        disk->meta_mapping_addr = NULL;
+        disk->meta_mapping_size = 0;
+    }
+    return SUCCESS;
+}
+
 /*********************************************************************
     Function     :    nvme_create_storage_disk
     Description  :    Creates a NVME Storage Disk and the
@@ -287,8 +346,8 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
     NVMEState *n)
 {
-    uint32_t blksize, ms;
-    uint64_t size, blks, msize;
+    uint32_t blksize, lba_idx;
+    uint64_t size, blks;
     char str[64];
 
     snprintf(str, sizeof(str), "nvme_disk%d_n%d.img", instance, nsid);
@@ -300,9 +359,14 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
         return FAIL;
     }
 
+    lba_idx = disk->idtfy_ns.flbas & 0xf;
     blks = disk->idtfy_ns.ncap;
-    blksize = NVME_BLOCK_SIZE(disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas].lbads);
+    blksize = NVME_BLOCK_SIZE(disk->idtfy_ns.lbafx[lba_idx].lbads);
     size = blks * blksize;
+    if (disk->idtfy_ns.flbas & 0x10) {
+        /* extended lba */
+        size += (blks * disk->idtfy_ns.lbafx[lba_idx].ms);
+    }
 
     if (size == 0) {
         return SUCCESS;
@@ -321,37 +385,19 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
     }
     disk->mapping_size = size;
 
+    if (nvme_create_meta_disk(instance, nsid, disk) != SUCCESS) {
+        return FAIL;
+    }
+
+    disk->ns_util = qemu_mallocz((disk->idtfy_ns.nsze + 7) / 8);
+    if (disk->ns_util == NULL) {
+        LOG_ERR("Error while reallocating the ns_util");
+        return FAIL;
+    }
+    disk->thresh_warn_issued = 0;
+
     LOG_NORM("created disk storage, mapping_addr:%p size:%lu",
         disk->mapping_addr, disk->mapping_size);
-
-    ms = disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas].ms;
-    if (ms != 0) {
-        msize = blks * ms;
-        snprintf(str, sizeof(str), "nvme_meta%d_n%d.img", instance, nsid);
-        disk->mfd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-        if (disk->mfd < 0) {
-            LOG_ERR("Error while creating the storage");
-            return FAIL;
-        }
-
-        msize = blks * ms;
-        if (posix_fallocate(disk->mfd, 0, msize) != 0) {
-            LOG_ERR("Error while allocating meta-data space for namespace");
-            return FAIL;
-        }
-
-        disk->meta_mapping_addr = mmap(NULL, msize, PROT_READ | PROT_WRITE,
-            MAP_SHARED, disk->mfd, 0);
-        if (disk->meta_mapping_addr == NULL) {
-            LOG_ERR("Error while opening namespace meta-data: %d", disk->nsid);
-            return FAIL;
-        }
-        disk->meta_mapping_size = msize;
-        memset(disk->meta_mapping_addr, 0xff, msize);
-    } else {
-        disk->meta_mapping_addr = NULL;
-        disk->meta_mapping_size = 0;
-    }
 
     return SUCCESS;
 }
@@ -379,6 +425,24 @@ int nvme_create_storage_disks(NVMEState *n)
     return ret;
 }
 
+static int nvme_close_meta_disk(DiskInfo *disk)
+{
+    if (disk->meta_mapping_addr != NULL) {
+        if (munmap(disk->meta_mapping_addr, disk->meta_mapping_size) < 0) {
+            LOG_ERR("Error while closing meta namespace: %d", disk->nsid);
+            return FAIL;
+        } else {
+            disk->meta_mapping_addr = NULL;
+            disk->meta_mapping_size = 0;
+            if (close(disk->mfd) < 0) {
+                LOG_ERR("Unable to close the nvme disk");
+                return FAIL;
+            }
+        }
+    }
+    return SUCCESS;
+}
+
 /*********************************************************************
     Function     :    nvme_close_storage_disk
     Description  :    Deletes NVME Storage Disk
@@ -400,6 +464,13 @@ int nvme_close_storage_disk(DiskInfo *disk)
                 return FAIL;
             }
         }
+        if (disk->ns_util) {
+            qemu_free(disk->ns_util);
+            disk->ns_util = NULL;
+        }
+    }
+    if (nvme_close_meta_disk(disk) != SUCCESS) {
+        return FAIL;
     }
     return SUCCESS;
 }

@@ -866,7 +866,7 @@ static void read_identify_cns(NVMEState *n)
         n->disk[index].idtfy_ns.flbas = LBA_FORMAT_INUSE;
 
         /* meta data capabilities */
-        n->disk[index].idtfy_ns.mc = 1 << 1;
+        n->disk[index].idtfy_ns.mc = 1 << 1 | 1 << 0;
         n->disk[index].idtfy_ns.dpc = 1 << 4 | 1 << 3 | 1 << 0;
         n->disk[index].idtfy_ns.dps = 0;
 
@@ -875,8 +875,6 @@ static void read_identify_cns(NVMEState *n)
             n->disk[index].idtfy_ns.lbafx[i].lbads = LBA_SIZE + (i / 4);
             n->disk[index].idtfy_ns.lbafx[i].ms = ms_arr[i % 4];
         }
-        n->disk[index].ns_util = qemu_mallocz(((n->ns_size * BYTES_PER_MB) /
-            BYTES_PER_BLOCK + 0x7) / 0x8);
         LOG_NORM("Capacity of namespace %d: %lu", index+1,
             n->disk[index].idtfy_ns.ncap);
     }
@@ -899,7 +897,7 @@ static void read_identify_cns(NVMEState *n)
 
     n->idtfy_ctrl->cqes = 4 << 4 | 4;
     n->idtfy_ctrl->sqes = 6 << 4 | 6;
-    n->idtfy_ctrl->oacs |= 0x2;  // set due to adm_cmd_format_nvm()
+    n->idtfy_ctrl->oacs |= 0x2;  /* set due to adm_cmd_format_nvm() */
 
     n->idtfy_ctrl->vid = 0x8086;
     n->idtfy_ctrl->ssvid = 0x0111;
@@ -911,6 +909,7 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->npss = NO_POWER_STATE_SUPPORT;
     n->idtfy_ctrl->awun = 0xff;
     n->idtfy_ctrl->lpa = 1 << 0;
+    n->idtfy_ctrl->mdts = 5; /* 128k max transfer */
 
     power = (struct power_state_description *)&(n->idtfy_ctrl->psd0);
     power->mp = 1;

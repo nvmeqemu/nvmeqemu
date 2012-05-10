@@ -1072,8 +1072,10 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
              "new: flbas:%x ds:%d ms:%d dpc:%x", __func__, disk->idtfy_ns.flbas,
              disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas & 0xf].lbads,
              disk->idtfy_ns.lbafx[disk->idtfy_ns.flbas & 0xf].ms,
-             lba_idx | meta_loc, disk->idtfy_ns.lbafx[lba_idx].lbads,
-             disk->idtfy_ns.lbafx[lba_idx].ms);
+             disk->idtfy_ns.dps, lba_idx | meta_loc,
+             disk->idtfy_ns.lbafx[lba_idx].lbads,
+             disk->idtfy_ns.lbafx[lba_idx].ms,
+             pil | pi);
 
     disk->idtfy_ns.nuse = 0;
     disk->idtfy_ns.flbas = lba_idx | meta_loc;

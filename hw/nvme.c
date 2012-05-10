@@ -928,8 +928,6 @@ static void setup_for_brnl(NVMEState *n)
     disk->idtfy_ns.lbaf[0].ms = 0;
     disk->idtfy_ns.lbaf[0].lbads = 9;
     disk->idtfy_ns.lbaf[0].rp = 2;\
-    disk->ns_util = qemu_mallocz(((64 * BYTES_PER_MB) / BYTES_PER_BLOCK + 0x7)
-        / 0x8);
 
     n->disk[0] = disk;
     set_bit(1, n->nn_vector);
@@ -944,8 +942,6 @@ static void setup_for_brnl(NVMEState *n)
     disk->idtfy_ns.lbaf[0].ms = 0;
     disk->idtfy_ns.lbaf[0].lbads = 9;
     disk->idtfy_ns.lbaf[0].rp = 2;
-    disk->ns_util = qemu_mallocz(((64 * BYTES_PER_MB) / BYTES_PER_BLOCK + 0x7)
-        / 0x8);
 
     n->disk[1] = disk;
     set_bit(2, n->nn_vector);
@@ -974,8 +970,6 @@ static void setup_for_brnl(NVMEState *n)
     disk->idtfy_ns.lbaf[0].ms = 0;
     disk->idtfy_ns.lbaf[0].lbads = 9;
     disk->idtfy_ns.lbaf[0].rp = 2;
-    disk->ns_util = qemu_mallocz(((64 * BYTES_PER_MB) / BYTES_PER_BLOCK + 0x7)
-        / 0x8);
 
     n->disk[3] = disk;
     set_bit(4, n->nn_vector);
@@ -1021,10 +1015,6 @@ static void read_identify_cns(NVMEState *n)
             disk->idtfy_ns.lbaf[i].lbads = LBA_SIZE;
             disk->idtfy_ns.lbaf[i].ms = 8;
         }
-
-        disk->ns_util = qemu_mallocz(((n->ns_size * BYTES_PER_MB) /
-            BYTES_PER_BLOCK + 0x7) / 0x8);
-
         n->disk[index] = disk;
         set_bit(index + 1, n->nn_vector);
 
@@ -1051,6 +1041,7 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->cqes = 4 << 4 | 4;
     n->idtfy_ctrl->sqes = 6 << 4 | 6;
     n->idtfy_ctrl->oacs = 0x7;
+    n->idtfy_ctrl->mdts = 5; /* 128k max transfer */
 
     n->idtfy_ctrl->vid = 0x8086;
 

@@ -84,7 +84,6 @@
 /* Queue Limit.*/
 #define NVME_MSIX_NVECTORS 32
 
-/* Assume that block is 512 bytes */
 #define NVME_BUF_SIZE 4096
 #define NVME_BLOCK_SIZE(x) (1 << x)
 
@@ -93,8 +92,6 @@
  */
 #define LBA_SIZE 9
 #define BYTES_PER_BLOCK NVME_BLOCK_SIZE(LBA_SIZE)
-
-#define NVME_EMPTY 0xffffffff
 
 /* Definitions regarding  Identify Namespace Datastructure */
 #define NO_POWER_STATE_SUPPORT 2 /* 0 BASED */
@@ -111,9 +108,9 @@
 #define NVME_MAX_USER_SIZE 16384
 #define NVME_MAX_NAMESPACE_SIZE 8192
 #define NVME_MAX_NUM_NAMESPACES 256
-#define NVME_AON_MAX_NUM_PDS 64
-#define NVME_AON_MAX_NUM_STAGS 64
-#define NVME_AON_MAX_NUM_NSTAGS 64
+#define NVME_AON_MAX_NUM_PDS 256
+#define NVME_AON_MAX_NUM_STAGS 256
+#define NVME_AON_MAX_NUM_NSTAGS 256
 
 #define NVME_MAX_DROP_RATE 10000000
 #define NVME_MIN_DROP_RATE 100

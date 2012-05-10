@@ -526,9 +526,6 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     cq->vector = c->iv;
     cq->phase_tag = 1;
 
-    LOG_DBG("kw q: cq[%d] phase_tag   %d", cq->id, cq->phase_tag);
-    LOG_DBG("kw q: msix vector. cq[%d] vector %d irq_enabled %d",
-                     cq->id, cq->vector, cq->irq_enabled);
     cq->size = c->qsize + 1;
     cq->phys_contig = c->pc;
 
@@ -1328,13 +1325,17 @@ static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     return 0;
 }
 
-/* aon specific */
 static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
-    uint32_t dw10 = cmd->cdw10;
-    uint32_t nsid, block_size, new_block_size;
     DiskInfo *disk;
+    uint64_t old_size;
+    uint32_t dw10 = cmd->cdw10;
+    uint32_t nsid, block_size;
+    uint8_t pil = (dw10 >> 5) & 0x8;
+    uint8_t pi = (dw10 >> 5) & 0x7;
+    uint8_t meta_loc = dw10 & 0x10;
+    uint8_t lba_idx = dw10 & 0xf;
 
     sf->sc = NVME_SC_SUCCESS;
     if (cmd->opcode != NVME_ADM_CMD_FORMAT_NVM) {
@@ -1347,16 +1348,6 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_SC_CMD_SEQ_ERROR;
         return FAIL;
     }
-
-    /* check for invalid settings */
-    if (dw10 >> 4 & 0x1f) {
-        /* meta-data or protection information set, not supported yet */
-        LOG_NORM("%s(): Invalid format %x, meta-data specified", __func__,
-            dw10);
-        sf->sc = NVME_INVALID_FORMAT;
-        return FAIL;
-    }
-
     nsid = cmd->nsid;
     if (nsid > n->num_namespaces || nsid == 0) {
         LOG_NORM("%s(): bad nsid:%d", __func__, nsid);
@@ -1370,31 +1361,76 @@ static uint32_t adm_cmd_format_nvm(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     }
 
     disk = n->disk[nsid - 1];
-    if ((dw10 & 0xf) > disk->idtfy_ns.nlbaf) {
+    if ((lba_idx) > disk->idtfy_ns.nlbaf) {
         LOG_NORM("%s(): Invalid format %x, lbaf out of range", __func__, dw10);
         sf->sc = NVME_INVALID_FORMAT;
         return FAIL;
     }
+    if (pi) {
+        if (pil && !(disk->idtfy_ns.dpc & 0x10)) {
+            LOG_NORM("%s(): pi requested as last 8 bytes, dpc:%x",
+                __func__, disk->idtfy_ns.dpc);
+            sf->sc = NVME_INVALID_FORMAT;
+            return FAIL;
+        }
+        if (!pil && !(disk->idtfy_ns.dpc & 0x8)) {
+            LOG_NORM("%s(): pi requested as first 8 bytes, dpc:%x",
+                __func__, disk->idtfy_ns.dpc);
+            sf->sc = NVME_INVALID_FORMAT;
+            return FAIL;
+        }
+        if (!((disk->idtfy_ns.dpc & 0x7) & (1 << (pi - 1)))) {
+            LOG_NORM("%s(): Invalid pi type:%d, dpc:%x", __func__,
+                pi, disk->idtfy_ns.dpc);
+            sf->sc = NVME_INVALID_FORMAT;
+            return FAIL;
+        }
+    }
+    if (meta_loc && disk->idtfy_ns.lbaf[lba_idx].ms &&
+            !(disk->idtfy_ns.mc & 1)) {
+        LOG_NORM("%s(): Invalid meta location:%x, mc:%x", __func__,
+            meta_loc, disk->idtfy_ns.mc);
+        sf->sc = NVME_INVALID_FORMAT;
+        return FAIL;
+    }
+    if (!meta_loc && disk->idtfy_ns.lbaf[lba_idx].ms &&
+            !(disk->idtfy_ns.mc & 2)) {
+        LOG_NORM("%s(): Invalid meta location:%x, mc:%x", __func__,
+            meta_loc, disk->idtfy_ns.mc);
+        sf->sc = NVME_INVALID_FORMAT;
+        return FAIL;
+    }
 
-    LOG_NORM("%s(): called", __func__);
-    block_size = 1 << disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas & 0xf].lbads;
-    disk->thresh_warn_issued = 0;
+    if (nvme_close_storage_disk(disk)) {
+        return FAIL;
+    }
+
+    old_size = disk->idtfy_ns.nsze * (1 << disk->idtfy_ns.lbaf[
+        disk->idtfy_ns.flbas & 0xf].lbads);
+    block_size = 1 << disk->idtfy_ns.lbaf[lba_idx].lbads;
+
+    LOG_NORM("%s(): called, previous: flbas:%x ds:%d ms:%d dps:%x"\
+             "new: flbas:%x ds:%d ms:%d dpc:%x", __func__, disk->idtfy_ns.flbas,
+             disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas & 0xf].lbads,
+             disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas & 0xf].ms,
+             disk->idtfy_ns.dps, lba_idx | meta_loc,
+             disk->idtfy_ns.lbaf[lba_idx].lbads,
+             disk->idtfy_ns.lbaf[lba_idx].ms, pil | pi);
+
     disk->idtfy_ns.nuse = 0;
-    disk->idtfy_ns.flbas = (disk->idtfy_ns.flbas & ~(0xf)) | (dw10 & 0xf);
-
-    new_block_size = 1 << disk->idtfy_ns.lbaf[disk->idtfy_ns.flbas & 0xf].lbads;
-    disk->idtfy_ns.nsze = (disk->idtfy_ns.nsze * block_size) / new_block_size;
+    disk->idtfy_ns.flbas = lba_idx | meta_loc;
+    disk->idtfy_ns.nsze = old_size / block_size;
     disk->idtfy_ns.ncap = disk->idtfy_ns.nsze;
+    disk->idtfy_ns.dps = pil | pi;
 
-    qemu_free(disk->ns_util);
-    disk->ns_util = qemu_mallocz((disk->idtfy_ns.nsze + 7) / 8);
-    if (disk->meta_mapping_addr != NULL) {
-        memset(disk->meta_mapping_addr, 0xff, disk->meta_mapping_size);
+    if (nvme_create_storage_disk(n->instance, nsid, disk, n)) {
+        return FAIL;
     }
 
     return 0;
 }
 
+/* aon specific */
 static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;

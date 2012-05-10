@@ -1441,6 +1441,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     if (block_shift < 9 || block_shift > 12) {
         LOG_NORM("%s(): bad block size shift:%d", __func__, block_shift);
         sf->sc = NVME_AON_INVALID_LOGICAL_BLOCK_FORMAT;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
     }
 
@@ -1449,11 +1450,13 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
             ns_bytes < (1 << n->aon_ctrl_vs->mns)) {
         LOG_NORM("%s(): bad ns size:%lu", __func__, ns.nsze);
         sf->sc = NVME_AON_INVALID_NAMESPACE_SIZE;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
     }
     if (ns.ncap != ns.nsze) {
         LOG_NORM("%s(): bad ncap:%ld, nsze:%ld", __func__, ns.ncap, ns.nsze);
         sf->sc = NVME_AON_INVALID_NAMESPACE_CAPACITY;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
     }
     if (ns.mc & ~0x2 || ns.dpc & ~0x19 || ns.dps & ~0x1) {
@@ -1461,6 +1464,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         LOG_NORM("%s(): bad data protection/meta-data: mc:%x dpc:%x dps:%x",
             __func__, ns.mc, ns.dpc, ns.dps);
         sf->sc = NVME_AON_INVALID_END_TO_END_DATA_PROTECTION_CONFIGURATION;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
     }
 
@@ -1587,18 +1591,21 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         if (ns_bytes - current_bytes > n->aon_ctrl_vs->tus) {
             LOG_NORM("%s(): bad ns size:%lu", __func__, ns.nsze);
             sf->sc = NVME_AON_INVALID_NAMESPACE_SIZE;
+            sf->sct = NVME_SCT_CMD_SPEC_ERR;
             return FAIL;
         }
     }
     if (ns.ncap != ns.nsze) {
         LOG_NORM("%s(): bad ncap:%ld, nsze:%ld", __func__, ns.ncap, ns.nsze);
         sf->sc = NVME_AON_INVALID_NAMESPACE_CAPACITY;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
     }
     if (ns.mc || ns.dpc || ns.dps) {
         /* does not support meta-data or data protection */
         LOG_NORM("%s(): bad data protection/meta-data", __func__);
         sf->sc = NVME_AON_INVALID_END_TO_END_DATA_PROTECTION_CONFIGURATION;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
     }
 

@@ -233,11 +233,8 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
             return FAIL;
         }
         data_size += (disk->idtfy_ns.lbafx[lba_idx].ms * (e->nlb + 1));
-    } else if (e->mptr && !(disk->idtfy_ns.lbafx[lba_idx].ms)) {
-        LOG_ERR("%s(): invalid meta-data for format", __func__);
-        sf->sc = NVME_SC_INVALID_FIELD;
-        return FAIL;
     }
+
     if (n->idtfy_ctrl->mdts && data_size > PAGE_SIZE *
                 (1 << (n->idtfy_ctrl->mdts))) {
         LOG_ERR("%s(): data size:%ld exceeds max:%ld", __func__,
@@ -275,7 +272,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
         }
     }
 
-    if (e->mptr != 0) {
+    if ((e->mptr != 0) && (disk->idtfy_ns.lbafx[lba_idx].ms != 0)) {
         unsigned int ms, meta_offset, meta_size;
         uint8_t *meta_mapping_addr;
 

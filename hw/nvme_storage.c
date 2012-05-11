@@ -227,6 +227,14 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         return FAIL;
     }
     lba_idx = disk->idtfy_ns.flbas & 0xf;
+    if ((e->mptr == 0) &&            /* if NOT supplying separate meta buffer */
+        (disk->idtfy_ns.lbaf[lba_idx].ms != 0) &&       /* if using metadata */
+        ((disk->idtfy_ns.flbas & 0x10) == 0)) {   /* if using separate buffer */
+
+        LOG_ERR("%s(): invalid meta-data for extended lba", __func__);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
 
     /* Read in the command */
     nvme_blk_sz = NVME_BLOCK_SIZE(disk->idtfy_ns.lbaf[lba_idx].lbads);
@@ -244,17 +252,9 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         }
     }
     if (disk->idtfy_ns.flbas & 0x10) {
-        if (e->mptr != 0) {
-            LOG_ERR("%s(): invalid meta-data for extended lba", __func__);
-            sf->sc = NVME_SC_INVALID_FIELD;
-            return FAIL;
-        }
         data_size += (disk->idtfy_ns.lbaf[lba_idx].ms * (e->nlb + 1));
-    } else if (e->mptr && !(disk->idtfy_ns.lbaf[lba_idx].ms)) {
-        LOG_ERR("%s(): invalid meta-data for format", __func__);
-        sf->sc = NVME_SC_INVALID_FIELD;
-        return FAIL;
     }
+
     if (n->idtfy_ctrl->mdts && data_size > PAGE_SIZE *
                 (1 << (n->idtfy_ctrl->mdts))) {
         LOG_ERR("%s(): data size:%ld exceeds max:%ld", __func__,
@@ -371,7 +371,13 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         }
     }
 
-    if (e->mptr != 0) {
+    /* Spec states that non-zero meta data buffers shall be ignored, i.e. no
+     * error reported, when the DW4&5 (MPTR) field is not in use */
+    if ((e->mptr != 0) &&                /* if supplying separate meta buffer */
+        (disk->idtfy_ns.lbaf[lba_idx].ms != 0) &&       /* if using metadata */
+        ((disk->idtfy_ns.flbas & 0x10) == 0)) {   /* if using separate buffer */
+
+        /* Then go ahead and use the separate meta data buffer */
         unsigned int ms, meta_offset, meta_size;
         uint8_t *meta_mapping_addr;
 

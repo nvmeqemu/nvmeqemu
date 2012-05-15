@@ -1507,6 +1507,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     set_bit(nsid, n->nn_vector);
     n->idtfy_ctrl->nn = find_last_bit(n->nn_vector, n->num_namespaces + 2);
     n->aon_ctrl_vs->tus -= ns_bytes;
+    n->user_space = n->aon_ctrl_vs->tus / BYTES_PER_MB;
     n->disk[nsid - 1] = (DiskInfo *)qemu_mallocz(sizeof(DiskInfo));
     n->disk[nsid - 1]->ns_util = qemu_mallocz((ns_bytes /
         (1 << block_shift) + 7) / 8);
@@ -1557,6 +1558,7 @@ static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         n->idtfy_ctrl->nn = 0;
     }
     n->aon_ctrl_vs->tus += ns_bytes;
+    n->user_space = n->aon_ctrl_vs->tus / BYTES_PER_MB;
 
     nvme_close_storage_disk(disk);
 
@@ -1658,6 +1660,7 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         } else if (ns_bytes < current_bytes) {
             n->aon_ctrl_vs->tus += current_bytes - ns_bytes;
         }
+        n->user_space = n->aon_ctrl_vs->tus / BYTES_PER_MB;
     }
 
     disk->idtfy_ns.nsze = ns.nsze;

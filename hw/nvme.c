@@ -26,8 +26,6 @@
 #include "nvme_debug.h"
 #include "range.h"
 
-#define BYTES_PER_MB (1024ULL * 1024ULL)
-
 static const VMStateDescription vmstate_nvme = {
     .name = "nvme",
     .version_id = 1,

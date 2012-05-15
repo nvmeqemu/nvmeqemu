@@ -92,6 +92,8 @@
  */
 #define LBA_SIZE 9
 #define BYTES_PER_BLOCK NVME_BLOCK_SIZE(LBA_SIZE)
+#define BYTES_PER_MB (1024ULL * 1024ULL)
+
 
 /* Definitions regarding  Identify Namespace Datastructure */
 #define NO_POWER_STATE_SUPPORT 2 /* 0 BASED */

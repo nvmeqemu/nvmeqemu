@@ -1041,6 +1041,7 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->cqes = 4 << 4 | 4;
     n->idtfy_ctrl->sqes = 6 << 4 | 6;
     n->idtfy_ctrl->oacs = 0x7;
+    n->idtfy_ctrl->oncs = 0x4;  /* dataset mgmt cmd */
     n->idtfy_ctrl->mdts = 5; /* 128k max transfer */
 
     n->idtfy_ctrl->vid = 0x8086;

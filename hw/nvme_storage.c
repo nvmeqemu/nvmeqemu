@@ -201,8 +201,10 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 
     if (sqe->opcode == NVME_CMD_FLUSH) {
         return NVME_SC_SUCCESS;
-    }
-    if ((sqe->opcode != NVME_CMD_READ) && (sqe->opcode != NVME_CMD_WRITE)) {
+    } else if (sqe->opcode == NVME_CMD_DSM) {
+        return NVME_SC_SUCCESS;
+    } else if ((sqe->opcode != NVME_CMD_READ) &&
+               (sqe->opcode != NVME_CMD_WRITE)) {
         LOG_NORM("%s():Wrong IO opcode:\t\t0x%02x", __func__, sqe->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
@@ -213,12 +215,12 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
         LOG_NORM("%s(): LBA out of range", __func__);
         sf->sc = NVME_SC_LBA_RANGE;
         return FAIL;
-    }
-    if ((e->slba + e->nlb) >= disk->idtfy_ns.ncap) {
+    } else if ((e->slba + e->nlb) >= disk->idtfy_ns.ncap) {
         LOG_NORM("%s():Capacity Exceeded", __func__);
         sf->sc = NVME_SC_CAP_EXCEEDED;
         return FAIL;
     }
+
     lba_idx = disk->idtfy_ns.flbas & 0xf;
     if ((e->mptr == 0) &&            /* if NOT supplying separate meta buffer */
         (disk->idtfy_ns.lbafx[lba_idx].ms != 0) &&       /* if using metadata */

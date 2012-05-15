@@ -647,10 +647,11 @@ enum {
 
 /* I/O Commands Opcodes */
 enum {
-    NVME_CMD_FLUSH = 0x00,
-    NVME_CMD_WRITE = 0x01,
-    NVME_CMD_READ  = 0x02,
-    NVME_CMD_LAST,
+    NVME_CMD_FLUSH      = 0x00,
+    NVME_CMD_WRITE      = 0x01,
+    NVME_CMD_READ       = 0x02,
+    NVME_CMD_DSM        = 0x09,
+    NVME_CMD_LAST
 };
 
 typedef struct NVMESmartLog {

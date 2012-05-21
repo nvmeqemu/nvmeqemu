@@ -988,6 +988,7 @@ static void read_identify_cns(NVMEState *n)
     int index, i;
     int last_index = n->num_namespaces - n->num_user_namespaces;
     DiskInfo *disk;
+    int ms_arr[4] = {0, 8, 64, 128};
 
     LOG_NORM("%s(): called", __func__);
     for (index = 0; index < last_index; index++) {
@@ -1011,7 +1012,7 @@ static void read_identify_cns(NVMEState *n)
         /* Filling in the LBA Format structure */
         for (i = 0; i <= NO_LBA_FORMATS; i++) {
             disk->idtfy_ns.lbaf[i].lbads = LBA_SIZE;
-            disk->idtfy_ns.lbaf[i].ms = 8;
+            disk->idtfy_ns.lbaf[i].ms = ms_arr[i % 4];
         }
         n->disk[index] = disk;
         set_bit(index + 1, n->nn_vector);

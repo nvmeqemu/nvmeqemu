@@ -1011,7 +1011,7 @@ static void read_identify_cns(NVMEState *n)
 
         /* Filling in the LBA Format structure */
         for (i = 0; i <= NO_LBA_FORMATS; i++) {
-            disk->idtfy_ns.lbaf[i].lbads = LBA_SIZE;
+            disk->idtfy_ns.lbaf[i].lbads = LBA_SIZE + (i / 4);
             disk->idtfy_ns.lbaf[i].ms = ms_arr[i % 4];
         }
         n->disk[index] = disk;

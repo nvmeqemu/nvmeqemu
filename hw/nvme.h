@@ -94,7 +94,6 @@
 #define BYTES_PER_BLOCK NVME_BLOCK_SIZE(LBA_SIZE)
 #define BYTES_PER_MB (1024ULL * 1024ULL)
 
-
 /* Definitions regarding  Identify Namespace Datastructure */
 #define NO_POWER_STATE_SUPPORT 2 /* 0 BASED */
 #define NVME_ABORT_COMMAND_LIMIT 10 /* 0 BASED */
@@ -285,7 +284,7 @@ enum {
     NVME_FEATURE_FULTON_STRIPING_CFG      = 0xf0,
 };
 
-struct nvme_features {
+typedef struct NVMEFeatures {
     uint32_t arbitration;
     uint32_t power_management;
     uint32_t LBA_range_type;    /* uses memory buffer */
@@ -298,7 +297,7 @@ struct nvme_features {
     uint32_t write_atomicity;
     uint32_t asynchronous_event_configuration;
     uint32_t software_progress_marker;
-};
+} NVMEFeatures;
 
 /*
     Common structure for admin commands:
@@ -376,12 +375,12 @@ typedef struct AONIdCtrlVs {
     uint32_t mnon;              /* [3092-3095] */
     uint32_t mnhr;              /* [3096-3099] */
     uint8_t ows;                /* [3100] */
-    uint8_t mows;               /* [3102] */
-    uint8_t smpsmax;            /* [3103] */
-    uint8_t smpsmin;            /* [3104] */
-    uint8_t nlbaf;              /* [3105] */
-    uint8_t mc;                 /* [3106] */
-    uint8_t dpc;                /* [3107] */
+    uint8_t mows;               /* [3101] */
+    uint8_t smpsmax;            /* [3102] */
+    uint8_t smpsmin;            /* [3103] */
+    uint8_t nlbaf;              /* [3104] */
+    uint8_t mc;                 /* [3105] */
+    uint8_t dpc;                /* [3106] */
 } AONIdCtrlVs;
 
 struct power_state_description {
@@ -451,6 +450,16 @@ typedef struct AsyncEvent {
     AsyncResult result;
 } AsyncEvent;
 
+typedef struct LBARangeType {
+    uint8_t  type;
+    uint8_t  attributes;
+    uint8_t  rsvd2[14];
+    uint64_t slba;
+    uint64_t nlb;
+    uint8_t  guid[16];
+    uint8_t  rsvd48[16];
+} LBARangeType;
+
 typedef struct DiskInfo {
     int fd;
     int mfd;
@@ -461,8 +470,8 @@ typedef struct DiskInfo {
     size_t meta_mapping_size;
     uint8_t *meta_mapping_addr;
 
-    /* Pointer to Identify Namespace Strucutre */
     NVMEIdentifyNamespace idtfy_ns;
+    LBARangeType range_type;
 
     /* Namespace utilization bitmasks (rounded off) */
     uint8_t *ns_util;
@@ -554,7 +563,7 @@ typedef struct NVMEState {
     uint8_t *rws_mask; /* RW1S mask */
     uint8_t *used_mask; /* Used/Resv mask */
 
-    struct nvme_features feature;
+    NVMEFeatures feature;
 
     NVMEIOCQueue cq[NVME_MAX_QS_ALLOCATED];
     NVMEIOSQueue sq[NVME_MAX_QS_ALLOCATED];

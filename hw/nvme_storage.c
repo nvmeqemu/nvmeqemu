@@ -855,6 +855,15 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
     }
     disk->thresh_warn_issued = 0;
 
+    memset(&disk->range_type, 0x0, sizeof(disk->range_type));
+    disk->range_type.nlb = disk->idtfy_ns.nsze;
+    disk->range_type.guid[15] = 0xde;
+    disk->range_type.guid[14] = 0xad;
+    disk->range_type.guid[13] = 0xba;
+    disk->range_type.guid[12] = 0xbe;
+    disk->range_type.guid[1]  = instance;
+    disk->range_type.guid[0]  = nsid;
+
     LOG_NORM("created disk storage, mapping_addr:%p size:%lu",
         disk->mapping_addr, disk->mapping_size);
 

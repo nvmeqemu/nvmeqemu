@@ -907,6 +907,10 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     sf->sc = NVME_SC_SUCCESS;
 
+    DiskInfo *disk;
+    uint32_t len;
+    uint32_t nsid = cmd->nsid;
+
     switch (sqe->fid) {
     case NVME_FEATURE_ARBITRATION:
         if (sqe->opcode == NVME_ADM_CMD_SET_FEATURES) {
@@ -925,7 +929,37 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         break;
 
     case NVME_FEATURE_LBA_RANGE_TYPE:
-        LOG_NORM("NVME_FEATURE_LBA_RANGE_TYPE not supported yet");
+        if (nsid > n->num_namespaces || nsid == 0) {
+            LOG_NORM("%s(): bad nsid:%d", __func__, nsid);
+            sf->sc = NVME_SC_INVALID_NAMESPACE;
+            return FAIL;
+        }
+        if (n->disk[nsid - 1] == NULL) {
+            LOG_NORM("%s(): nsid:%d not created", __func__, nsid);
+            sf->sc = NVME_SC_INVALID_NAMESPACE;
+            return FAIL;
+        }
+        disk = n->disk[nsid - 1];
+        len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), sizeof(disk->range_type));
+        if (sqe->opcode == NVME_ADM_CMD_SET_FEATURES) {
+            LBARangeType rt;
+            nvme_dma_mem_read(cmd->prp1, (uint8_t *)&rt, len);
+            if (len != sizeof(rt)) {
+                nvme_dma_mem_read(cmd->prp2, (uint8_t *)
+                    (((uint8_t *)&(rt)) + len),
+                    (sizeof(rt) - len));
+            }
+            disk->range_type.type = rt.type;
+            disk->range_type.attributes = rt.attributes;
+        } else {
+            nvme_dma_mem_write(cmd->prp1, (uint8_t *)&disk->range_type, len);
+            if (len != sizeof(disk->range_type)) {
+                nvme_dma_mem_write(cmd->prp2, (uint8_t *)
+                    (((uint8_t *)&(disk->range_type)) + len),
+                    (sizeof(disk->range_type) - len));
+            }
+            cqe->cmd_specific = 0;
+        }
         break;
 
     case NVME_FEATURE_TEMPERATURE_THRESHOLD:
@@ -1509,11 +1543,12 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     n->aon_ctrl_vs->tus -= ns_bytes;
     n->user_space = n->aon_ctrl_vs->tus / BYTES_PER_MB;
     n->disk[nsid - 1] = (DiskInfo *)qemu_mallocz(sizeof(DiskInfo));
-    n->disk[nsid - 1]->ns_util = qemu_mallocz((ns_bytes /
-        (1 << block_shift) + 7) / 8);
     memcpy(&n->disk[nsid - 1]->idtfy_ns, &ns, sizeof(ns));
 
-    nvme_create_storage_disk(n->instance, nsid, n->disk[nsid - 1], n);
+    if (nvme_create_storage_disk(n->instance, nsid, n->disk[nsid - 1], n)) {
+        LOG_ERR("failed to create storage disk for namespace:%d\n", nsid);
+        return FAIL;
+    }
 
     return 0;
 }
@@ -1561,9 +1596,6 @@ static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     n->user_space = n->aon_ctrl_vs->tus / BYTES_PER_MB;
 
     nvme_close_storage_disk(disk);
-
-    qemu_free(disk->ns_util);
-    qemu_free(disk);
 
     n->disk[nsid - 1] = NULL;
 

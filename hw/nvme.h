@@ -664,7 +664,7 @@ static const struct NVMEReg nvme_reg[] = {
 {
     .offset = NVME_CAP,
     .len = 0x04,
-    .reset = 0x0f0103FF,
+    .reset = 0x0f0007FF,
     .rw_mask = 0x00,
     .rwc_mask = 0x00,
     .rws_mask = 0x00,
@@ -673,7 +673,7 @@ static const struct NVMEReg nvme_reg[] = {
 {
     .offset = NVME_CAP + 4,
     .len = 0x04,
-    .reset = 0x00000020,
+    .reset = 0x00000060,
     .rw_mask = 0x00,
     .rwc_mask = 0x00,
     .rws_mask = 0x00,

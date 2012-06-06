@@ -153,7 +153,7 @@ static uint8_t check_read_blocks(DiskInfo *disk, uint64_t slba, uint64_t nlb)
         }
     }
 
-    return empty ? NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER :
+    return empty ? NVME_AON_READ_UNALLOCATED_BLOCK :
         partial ? NVME_AON_READ_PARTIAL_UNALLOCATED_BLOCK : 0;
 }
 

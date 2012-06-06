@@ -1507,18 +1507,15 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_NORM("%s(): called", __func__);
 
     nvme_dma_mem_read((target_phys_addr_t)cmd->prp1, (uint8_t *)&ns, PAGE_SIZE);
-    block_shift = ns.lbaf[ns.flbas & 0xf].lbads;
-    if (block_shift < 9 || block_shift > 12) {
-        LOG_NORM("%s(): bad block size shift:%d", __func__, block_shift);
-        sf->sc = NVME_AON_INVALID_LOGICAL_BLOCK_FORMAT;
-        sf->sct = NVME_SCT_CMD_SPEC_ERR;
-        return FAIL;
-    }
 
+    ns.nlbaf = n->aon_ctrl_vs->nlbaf;
+    memcpy(ns.lbaf, n->aon_ctrl_vs->lbaf, sizeof(n->aon_ctrl_vs->lbaf));
+    block_shift = ns.lbaf[ns.flbas & 0xf].lbads;
     ns_bytes = ns.nsze * (1 << block_shift);
-    if (ns_bytes > n->aon_ctrl_vs->tus ||
+    if (ns_bytes > n->available_space ||
             ns_bytes < (1 << n->aon_ctrl_vs->mns)) {
-        LOG_NORM("%s(): bad ns size:%lu", __func__, ns.nsze);
+        LOG_NORM("%s(): bad ns size:%lu available space:%lu", __func__,
+            ns.nsze, n->available_space);
         sf->sc = NVME_AON_INVALID_NAMESPACE_SIZE;
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
@@ -1529,10 +1526,12 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
     }
-    if (ns.mc & ~0x2 || ns.dpc & ~0x19 || ns.dps & ~0x1) {
+    if (ns.mc & ~(n->aon_ctrl_vs->mc) || ns.dpc & ~(n->aon_ctrl_vs->dpc) ||
+            !nvme_dps_valid(ns.dps, ns.dpc)) {
         /* does not support selected meta-data or data protection */
-        LOG_NORM("%s(): bad data protection/meta-data: mc:%x dpc:%x dps:%x",
-            __func__, ns.mc, ns.dpc, ns.dps);
+        LOG_NORM("%s(): bad data protection/meta-data: mc:%x dpc:%x dps:%x\n"
+            "  Controller supports: mc:%x dpc:%x", __func__, ns.mc, ns.dpc,
+            ns.dps, n->aon_ctrl_vs->mc, n->aon_ctrl_vs->dpc);
         sf->sc = NVME_AON_INVALID_END_TO_END_DATA_PROTECTION_CONFIGURATION;
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
@@ -1540,8 +1539,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     set_bit(nsid, n->nn_vector);
     n->idtfy_ctrl->nn = find_last_bit(n->nn_vector, n->num_namespaces + 2);
-    n->aon_ctrl_vs->tus -= ns_bytes;
-    n->user_space = n->aon_ctrl_vs->tus / BYTES_PER_MB;
+    n->available_space -= ns_bytes;
     n->disk[nsid - 1] = (DiskInfo *)qemu_mallocz(sizeof(DiskInfo));
     memcpy(&n->disk[nsid - 1]->idtfy_ns, &ns, sizeof(ns));
 
@@ -1592,8 +1590,7 @@ static uint32_t aon_adm_cmd_delete_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         /* deleted the last namespace */
         n->idtfy_ctrl->nn = 0;
     }
-    n->aon_ctrl_vs->tus += ns_bytes;
-    n->user_space = n->aon_ctrl_vs->tus / BYTES_PER_MB;
+    n->available_space += ns_bytes;
 
     nvme_close_storage_disk(disk);
 
@@ -1607,10 +1604,8 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     NVMEIdentifyNamespace ns;
     DiskInfo *disk;
-    uint32_t nsid;
-    uint64_t ns_bytes;
-    uint64_t current_bytes;
-    uint32_t block_size;
+    uint32_t nsid, lba_idx, block_size;
+    uint64_t ns_bytes, current_bytes;
 
     sf->sc = NVME_SC_SUCCESS;
     if (cmd->opcode != AON_ADM_CMD_MODIFY_NAMESPACE || !n->use_aon) {
@@ -1636,29 +1631,17 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return FAIL;
     }
 
-    LOG_NORM("%s(): called", __func__);
+    LOG_NORM("%s(): called nsid:%d", __func__, nsid);
 
     disk = n->disk[nsid - 1];
-
     nvme_dma_mem_read((target_phys_addr_t)cmd->prp1, (uint8_t *)&ns, PAGE_SIZE);
-    if (ns.flbas != disk->idtfy_ns.flbas) {
-        LOG_NORM("%s(): modify cannot change flbas", __func__);
-        sf->sc = NVME_SC_INVALID_FIELD;
-        return FAIL;
-    }
 
-    block_size = 1 << (ns.lbaf[ns.flbas & 0xf].lbads);
-    if (ns.lbaf[ns.flbas & 0xf].lbads != disk->idtfy_ns.lbaf[
-            ns.flbas & 0xf].lbads) {
-        LOG_NORM("%s(): modify cannot change block size", __func__);
-        sf->sc = NVME_SC_INVALID_FIELD;
-        return FAIL;
-    }
-
+    lba_idx = disk->idtfy_ns.flbas & NVME_FLBAS_LBA_MASK;
+    block_size = 1 << (disk->idtfy_ns.lbaf[lba_idx].lbads);
     ns_bytes = ns.nsze * block_size;
     current_bytes = disk->idtfy_ns.nsze * block_size;
     if (ns_bytes > current_bytes) {
-        if (ns_bytes - current_bytes > n->aon_ctrl_vs->tus) {
+        if (ns_bytes - current_bytes > n->available_space) {
             LOG_NORM("%s(): bad ns size:%lu", __func__, ns.nsze);
             sf->sc = NVME_AON_INVALID_NAMESPACE_SIZE;
             sf->sct = NVME_SCT_CMD_SPEC_ERR;
@@ -1671,36 +1654,28 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
     }
-    if (ns.mc || ns.dpc || ns.dps) {
-        /* does not support meta-data or data protection */
-        LOG_NORM("%s(): bad data protection/meta-data", __func__);
-        sf->sc = NVME_AON_INVALID_END_TO_END_DATA_PROTECTION_CONFIGURATION;
-        sf->sct = NVME_SCT_CMD_SPEC_ERR;
-        return FAIL;
-    }
 
     if (disk->idtfy_ns.nsze != ns.nsze) {
-        /* change the size of the disk */
+        uint64_t size = ns.ncap * block_size;
+        if (disk->idtfy_ns.flbas & 0x10) {
+            size += ns.ncap * disk->idtfy_ns.lbaf[lba_idx].ms;
+        }
         disk->ns_util = qemu_realloc(disk->ns_util,
             (ns_bytes / block_size + 7) / 8);
-        if (posix_fallocate(disk->fd, 0, ns.ncap * block_size) != 0) {
+        if (posix_fallocate(disk->fd, 0, size) != 0) {
             LOG_ERR("Error while modifying size of namespace");
             return FAIL;
         }
         if (ns_bytes > current_bytes) {
-            n->aon_ctrl_vs->tus -= ns_bytes - current_bytes;
+            n->available_space -= (ns_bytes - current_bytes);
         } else if (ns_bytes < current_bytes) {
-            n->aon_ctrl_vs->tus += current_bytes - ns_bytes;
+            n->available_space += (current_bytes - ns_bytes);
         }
-        n->user_space = n->aon_ctrl_vs->tus / BYTES_PER_MB;
     }
 
     disk->idtfy_ns.nsze = ns.nsze;
     disk->idtfy_ns.ncap = ns.ncap;
     disk->idtfy_ns.nsfeat = ns.nsfeat;
-    disk->idtfy_ns.nlbaf = ns.nlbaf;
-    disk->idtfy_ns.dpc = ns.dpc;
-    memcpy(disk->idtfy_ns.lbaf, ns.lbaf, sizeof(ns.lbaf));
 
     return 0;
 }

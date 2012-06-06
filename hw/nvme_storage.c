@@ -121,21 +121,44 @@ static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,
     Arguments    :    NVMEState * : Pointer to NVME device State
                       struct NVME_rw * : NVME IO command
 *********************************************************************/
-static void update_ns_util(DiskInfo *disk, uint64_t slba, uint64_t nlb)
+static void update_ns_util(DiskInfo *disk, uint64_t slba, uint16_t nlb)
 {
-    uint64_t index;
+    uint64_t nr;
+    unsigned long *addr = (unsigned long *)disk->ns_util;
 
     /* Update the namespace utilization */
-    for (index = slba; index <= nlb + slba; index++) {
-        if (!((disk->ns_util[index / 8]) & (1 << (index % 8)))) {
-            disk->ns_util[(index / 8)] |= (1 << (index % 8));
-            disk->idtfy_ns.nuse++;
+    for (nr = slba; nr <= nlb + slba; ++nr) {
+        if (test_and_set_bit(nr, addr) == 0) {
+            ++disk->idtfy_ns.nuse;
         }
     }
 }
 
+static uint8_t check_read_blocks(DiskInfo *disk, uint64_t slba, uint64_t nlb)
+{
+    uint64_t nr;
+    int partial = 0;
+    int empty = 1;
+    unsigned long *addr = (unsigned long *)disk->ns_util;
+
+    if (!(disk->idtfy_ns.nsfeat & NVME_NSFEAT_READ_ERR)) {
+        return 0;
+    }
+
+    for (nr = slba; nr <= nlb + slba; ++nr) {
+        if (test_bit(nr, addr)) {
+            empty = 0;
+        } else {
+            partial = 1;
+        }
+    }
+
+    return empty ? NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER :
+        partial ? NVME_AON_READ_PARTIAL_UNALLOCATED_BLOCK : 0;
+}
+
 static void nvme_update_stats(NVMEState *n, DiskInfo *disk, uint8_t opcode,
-    uint64_t slba, uint64_t nlb)
+    uint64_t slba, uint16_t nlb)
 {
     uint64_t tmp;
     if (opcode == NVME_CMD_WRITE) {
@@ -213,7 +236,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         return NVME_SC_SUCCESS;
     } else if ((sqe->opcode != NVME_CMD_READ) &&
              (sqe->opcode != NVME_CMD_WRITE)) {
-        LOG_NORM("%s():Wrong IO opcode:\t\t0x%02x", __func__, sqe->opcode);
+        LOG_NORM("%s(): Wrong IO opcode:%#02x", __func__, sqe->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }
@@ -233,7 +256,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         (disk->idtfy_ns.lbaf[lba_idx].ms != 0) &&       /* if using metadata */
         ((disk->idtfy_ns.flbas & 0x10) == 0)) {   /* if using separate buffer */
 
-        LOG_ERR("%s(): invalid meta-data for extended lba", __func__);
+        LOG_ERR("%s(): no meta-data given for separate buffer", __func__);
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
@@ -354,6 +377,15 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         }
     }
 
+    if (e->opcode == NVME_CMD_READ) {
+        uint8_t sc = check_read_blocks(disk, e->slba, e->nlb);
+        if (sc != 0) {
+            sf->sct = NVME_SCT_CMD_SPEC_ERR;
+            sf->sc = sc;
+            sf->dnr = 1;
+            return FAIL;
+        }
+    }
     /* Writing/Reading PRP1 */
     res = do_rw_prp(n, e->prp1, &data_size, &file_offset, mapping_addr,
         e->opcode);

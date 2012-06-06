@@ -323,6 +323,18 @@ typedef struct NVMEAdmCmdFeatures {
     uint32_t cdw15;
 } NVMEAdmCmdFeatures;
 
+typedef struct power_state_description {
+    uint16_t mp;
+    uint16_t reserved;
+    uint32_t enlat;
+    uint32_t exlat;
+    uint8_t  rrt;
+    uint8_t  rrl;
+    uint8_t  rwt;
+    uint8_t  rwl;
+    uint8_t  resv[16];
+} PowerStateDescriptor;
+
 /* Identify - Controller.
  * Number in comments are in bytes.
  * Check spec NVM Express 1.0b Chapter 5.11 Identify command
@@ -358,10 +370,18 @@ typedef struct NVMEIdentifyController {
     uint16_t awupf;
     uint8_t rsvd703[174];
     uint8_t rsvd2047[1344];
-    uint8_t psd0[32];
-    uint8_t psdx[992];
+    PowerStateDescriptor psd[32];
     uint8_t vs[1024];
 } NVMEIdentifyController;
+
+/* Figure 68: Identify – LBA Format Data Structure,
+ * NVM Command Set Specific */
+typedef struct NVMELBAFormat {  /* Dword - 32 bits */
+    uint16_t ms;        /* [0-15] Metadata Size */
+    uint8_t lbads;      /* [16-23] LBA Data Size in a power of 2 (2^n)*/
+    uint8_t rp;         /* [24-25] Relative Performance */
+                        /* [26-31] Bits Reserved */
+} NVMELBAFormat;
 
 typedef struct AONIdCtrlVs {
     /* starts at the vendor specific section of nvme identify controller */
@@ -381,45 +401,9 @@ typedef struct AONIdCtrlVs {
     uint8_t nlbaf;              /* [3104] */
     uint8_t mc;                 /* [3105] */
     uint8_t dpc;                /* [3106] */
+    uint8_t resv3107[93];       /* [3107-3199] */
+    NVMELBAFormat lbaf[16];     /* [3200-3263] LBA Format 0-15 Support */
 } AONIdCtrlVs;
-
-struct power_state_description {
-    uint16_t mp;
-    uint16_t reserved;
-    uint32_t enlat;
-    uint32_t exlat;
-    uint8_t  rrt;
-    uint8_t  rrl;
-    uint8_t  rwt;
-    uint8_t  rwl;
-};
-
-/* In bits */
-typedef struct NVMEIdentifyPowerDesc {
-    uint16_t mp;        /* [0-15] Maximum Power */
-    uint16_t res0;      /* [16-31] Reserved */
-    uint32_t enlat;     /* [32-61] Entry Latency */
-    uint32_t exlat;     /* [62-95] Exit Latency */
-    uint8_t  rrt:5;     /* [96-100] Relative Read Throughput */
-    uint8_t  res1:3;    /* [101-103] Reserved */
-    uint8_t  rrl:5;     /* [104-108] Relative Read Latency */
-    uint8_t  res2:3;    /* [109-111] Reserved */
-    uint8_t  rwt:5;     /* [112-116] Relative Write Throughput */
-    uint8_t  res3:3;    /* [117-119] Reserved */
-    uint8_t  rwl:5;     /* [120-124] Relative Write Latency */
-    uint8_t  res4:3;    /* [125-127] Reserved */
-    uint8_t  res5[16];  /* [128-255] Reserved */
-} NVMEIdentifyPowerDesc;
-
-
-/* Figure 68: Identify – LBA Format Data Structure,
- * NVM Command Set Specific */
-struct NVMELBAFormat {  /* Dword - 32 bits */
-    uint16_t ms;        /* [0-15] Metadata Size */
-    uint8_t lbads;      /* [16-23] LBA Data Size in a power of 2 (2^n)*/
-    uint8_t rp;         /* [24-25] Relative Performance */
-                        /* [26-31] Bits Reserved */
-};
 
 /* Identify - Namespace. Numbers means bytes in comments. */
 typedef struct NVMEIdentifyNamespace {
@@ -433,10 +417,42 @@ typedef struct NVMEIdentifyNamespace {
     uint8_t  dpc;       /* [28] End2end Data Protection Capabilities */
     uint8_t  dps;       /* [29] End2end Data Protection Type Settings */
     uint8_t  res0[98];  /* [30-127] Reserved */
-    struct NVMELBAFormat lbaf[16]; /* [128-191] LBA Format 0-15 Support */
+    NVMELBAFormat lbaf[16]; /* [128-191] LBA Format 0-15 Support */
     uint8_t  res1[192]; /* [192-383] Reserved */
     uint8_t  vs[3712];  /* [384-4095] Vendor Specific */
 } NVMEIdentifyNamespace;
+
+enum {
+    NVME_FLBAS_EXTENDED_LBA = 1 << 4,
+    NVME_FLBAS_LBA_MASK     = 0xf,
+    NVME_MC_SEPARATE_BUFFER = 1 << 1,
+    NVME_MC_EXTENDED_LBA    = 1 << 0,
+    NVME_DPC_PI_LAST        = 1 << 4,
+    NVME_DPC_PI_FIRST       = 1 << 3,
+    NVME_DPC_TYPE_1         = 1 << 0,
+    NVME_DPC_TYPE_2         = 1 << 1,
+    NVME_DPC_TYPE_3         = 1 << 2,
+    NVME_DPC_TYPE_MASK      = 0x7,
+    NVME_DPS_PI_FIRST       = 1 << 3,
+    NVME_DPS_PI_LAST        = 0 << 3,
+    NVME_DPS_TYPE_1         = 1,
+    NVME_DPS_TYPE_2         = 2,
+    NVME_DPS_TYPE_3         = 3,
+    NVME_DPS_TYPE_MASK      = 0x7,
+    NVME_NSFEAT_THIN        = 1 << 0,
+    NVME_NSFEAT_VOLATILE    = 1 << 1,
+    NVME_NSFEAT_READ_ERR    = 1 << 2,
+};
+
+/* macros to convert DPS to DPC bits */
+#define NVME_DPS_PIL(dps) (1 << (4 - ((dps >> 3) & 1)))
+#define NVME_DPS_TYPE(dps) (1 << ((dps & NVME_DPS_TYPE_MASK) - 1))
+
+static inline int nvme_dps_valid(uint16_t dps, uint16_t dpc)
+{
+    return !dps || ((dpc & NVME_DPS_PIL(dps)) &&
+        ((dpc & NVME_DPC_TYPE_MASK) & NVME_DPS_TYPE(dps)));
+}
 
 typedef struct AsyncResult {
     uint8_t event_type;
@@ -573,12 +589,15 @@ typedef struct NVMEState {
     uint32_t num_namespaces;
     uint32_t instance;
     uint32_t num_user_namespaces;
-    uint64_t user_space;
+    uint32_t total_size;
     uint32_t brnl;
     uint32_t drop_rate;
     uint32_t fail_rate;
     uint32_t fultondale;
     uint32_t security;
+    uint32_t lba_index;
+
+    uint64_t available_space;
 
     char password[32];
     uint8_t password_retry;
@@ -1232,6 +1251,8 @@ enum {
     NVME_AON_INVALID_END_TO_END_DATA_PROTECTION_CONFIGURATION = 0x86,
     NVME_AON_INVALID_NAMESPACE_TAG = 0x87,
     NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER = 0x88,
+    NVME_AON_READ_PARTIAL_UNALLOCATED_BLOCK = 0x89,
+    NVME_AON_READ_UNALLOCATED_BLOCK = 0x8a,
 };
 
 /* Figure 20: Status Code – Media Error Values */

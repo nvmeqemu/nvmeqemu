@@ -160,8 +160,6 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
         /* Check if the SQ processing routine is scheduled for
          * execution within 5 uS.If it isn't, make it so
          */
-
-
         deadline = qemu_get_clock_ns(vm_clock) + 5000;
 
         if (nvme_dev->sq_processing_timer_target == 0) {
@@ -345,27 +343,41 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
                 if ((nvme_dev->cntrl_reg[NVME_CC] & 0x70) >> 4 ==
                         AON_COMMAND_SET) {
                     /* using aon, fill aon vendor specifics */
-                    /* TODO: make everything command line options */
+                    AONIdCtrlVs *aon_ctrl_vs;
                     nvme_dev->use_aon = 1;
 
                     nvme_dev->aon_ctrl_vs = (AONIdCtrlVs *)&nvme_dev->
                         idtfy_ctrl->vs[0];
-                    nvme_dev->aon_ctrl_vs->acc = 1 | 1 << 1;
-                    nvme_dev->aon_ctrl_vs->mns = 12; /* 4KB */
-                    nvme_dev->aon_ctrl_vs->mws = 6; /* 64B */
-                    nvme_dev->aon_ctrl_vs->mnpd = NVME_AON_MAX_NUM_PDS;
-                    nvme_dev->aon_ctrl_vs->tus = nvme_dev->user_space *
-                        BYTES_PER_MB;
-                    nvme_dev->aon_ctrl_vs->mnn = nvme_dev->num_namespaces;
-                    nvme_dev->aon_ctrl_vs->mnhr = NVME_AON_MAX_NUM_STAGS;
-                    nvme_dev->aon_ctrl_vs->mnon = NVME_AON_MAX_NUM_NSTAGS;
-                    nvme_dev->aon_ctrl_vs->ows = 6;
-                    nvme_dev->aon_ctrl_vs->mows = 6;
-                    nvme_dev->aon_ctrl_vs->smpsmax = 0; /* 4k */
-                    nvme_dev->aon_ctrl_vs->smpsmin = 0; /* 4k */
-                    nvme_dev->aon_ctrl_vs->nlbaf = 0;
-                    nvme_dev->aon_ctrl_vs->mc = 1 << 1;
-                    nvme_dev->aon_ctrl_vs->dpc = 1 << 4 | 1 << 3 | 1 << 0;
+                    aon_ctrl_vs = nvme_dev->aon_ctrl_vs;
+
+                    aon_ctrl_vs->acc = 1 | 1 << 1;
+                    aon_ctrl_vs->mns = 12; /* 4KB */
+                    aon_ctrl_vs->mws = 6; /* 64B */
+                    aon_ctrl_vs->mnpd = NVME_AON_MAX_NUM_PDS;
+                    aon_ctrl_vs->tus = nvme_dev->total_size * BYTES_PER_MB;
+                    aon_ctrl_vs->mnn = nvme_dev->num_namespaces;
+                    aon_ctrl_vs->mnhr = NVME_AON_MAX_NUM_STAGS;
+                    aon_ctrl_vs->mnon = NVME_AON_MAX_NUM_NSTAGS;
+                    aon_ctrl_vs->ows = 6;
+                    aon_ctrl_vs->mows = 6;
+                    aon_ctrl_vs->smpsmax = 0; /* 4k */
+                    aon_ctrl_vs->smpsmin = 0; /* 4k */
+                    aon_ctrl_vs->nlbaf = 3;
+                    aon_ctrl_vs->mc = 1 << 1;
+                    aon_ctrl_vs->dpc = 1 << 4 | 1 << 3 | 1 << 0;
+
+                    aon_ctrl_vs->lbaf[0].lbads = 9;
+                    aon_ctrl_vs->lbaf[0].ms    = 0;
+                    aon_ctrl_vs->lbaf[0].rp    = 1;
+                    aon_ctrl_vs->lbaf[1].lbads = 9;
+                    aon_ctrl_vs->lbaf[1].ms    = 8;
+                    aon_ctrl_vs->lbaf[1].rp    = 2;
+                    aon_ctrl_vs->lbaf[2].lbads = 12;
+                    aon_ctrl_vs->lbaf[2].ms    = 0;
+                    aon_ctrl_vs->lbaf[2].rp    = 0;
+                    aon_ctrl_vs->lbaf[3].lbads = 12;
+                    aon_ctrl_vs->lbaf[3].ms    = 64;
+                    aon_ctrl_vs->lbaf[3].rp    = 2;
 
                     nvme_dev->protection_domains = qemu_mallocz(
                         sizeof(NVMEAonPD *)*nvme_dev->aon_ctrl_vs->mnpd);
@@ -925,7 +937,7 @@ static void setup_for_brnl(NVMEState *n)
     disk->idtfy_ns.flbas = 0;
     disk->idtfy_ns.lbaf[0].ms = 0;
     disk->idtfy_ns.lbaf[0].lbads = 9;
-    disk->idtfy_ns.lbaf[0].rp = 2;\
+    disk->idtfy_ns.lbaf[0].rp = 2;
 
     n->disk[0] = disk;
     set_bit(1, n->nn_vector);
@@ -984,7 +996,7 @@ static void setup_for_brnl(NVMEState *n)
 *********************************************************************/
 static void read_identify_cns(NVMEState *n)
 {
-    struct power_state_description *power;
+    PowerStateDescriptor *power;
     int index, i;
     int last_index = n->num_namespaces - n->num_user_namespaces;
     DiskInfo *disk;
@@ -1002,10 +1014,11 @@ static void read_identify_cns(NVMEState *n)
         disk->idtfy_ns.ncap = (n->ns_size * BYTES_PER_MB) / BYTES_PER_BLOCK;
         disk->idtfy_ns.nuse = 0;
         disk->idtfy_ns.nlbaf = NO_LBA_FORMATS;
-        disk->idtfy_ns.flbas = LBA_FORMAT_INUSE;
+        disk->idtfy_ns.flbas = n->lba_index;
+        disk->idtfy_ns.nsfeat = NVME_NSFEAT_READ_ERR;
 
         /* meta data capabilities */
-        disk->idtfy_ns.mc = 1 << 1;
+        disk->idtfy_ns.mc = 1 << 1 | 1 << 0;
         disk->idtfy_ns.dpc = 1 << 4 | 1 << 3 | 1 << 0;
         disk->idtfy_ns.dps = 0; /* user can set this with format */
 
@@ -1059,14 +1072,28 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->awun = 0xff;
     n->idtfy_ctrl->lpa = 1 << 0;
 
-    power = (struct power_state_description *)&(n->idtfy_ctrl->psd0);
-    power->mp = 1;
+    power = &(n->idtfy_ctrl->psd[0]);
+    power->mp = 0x9c4;
+    power->enlat = 0x10;
+    power->exlat = 0x4;
 
-    power = (struct power_state_description *)&(n->idtfy_ctrl->psdx[0]);
-    power->mp = 2;
+    power = &(n->idtfy_ctrl->psd[1]);
+    power->mp = 0x8fc;
+    power->enlat = 0x10;
+    power->exlat = 0x10;
+    power->rrt = 0x1;
+    power->rrl = 0x1;
+    power->rwt = 0x1;
+    power->rwl = 0x1;
 
-    power = (struct power_state_description *)&(n->idtfy_ctrl->psdx[32]);
-    power->mp = 3;
+    power = &(n->idtfy_ctrl->psd[2]);
+    power->mp = 0x2bc;
+    power->enlat = 0x1e8480;
+    power->exlat = 0x1e8480;
+    power->rrt = 0x2;
+    power->rrl = 0x2;
+    power->rwt = 0x2;
+    power->rwl = 0x1;
 }
 
 /*********************************************************************
@@ -1097,21 +1124,29 @@ static int pci_nvme_init(PCIDevice *pci_dev)
             n->ns_size, NVME_MAX_NAMESPACE_SIZE);
         return -1;
     }
-    if (n->user_space > NVME_MAX_USER_SIZE) {
-        LOG_ERR("bad user size value:%lu, must be less than %d",
-            n->user_space, NVME_MAX_USER_SIZE);
-        return -1;
-    }
     if (n->num_user_namespaces > n->num_namespaces) {
         LOG_ERR("bad user namespaces value:%u, must be less than namespaces:%u",
             n->num_user_namespaces, n->num_namespaces);
+        return -1;
+    }
+    if (n->total_size > NVME_MAX_USER_SIZE) {
+        LOG_ERR("bad user size value:%u, must be less than %d",
+            n->total_size, NVME_MAX_USER_SIZE);
+        return -1;
+    }
+    if (n->num_user_namespaces && ((n->num_namespaces - n->num_user_namespaces) *
+            n->ns_size) > n->total_size) {
+        LOG_NORM("Storage space over-allocated, namespaces:%d"
+                 "reserved namespaces:%d namespace size:%d total size:%d\n",
+                 n->num_namespaces, n->num_user_namespaces, n->ns_size,
+                 n->total_size);
         return -1;
     }
     if (n->brnl) {
         LOG_NORM("overriding all values for brnl use");
         n->num_namespaces = NVME_MAX_NUM_NAMESPACES;
         n->num_user_namespaces = NVME_MAX_NUM_NAMESPACES - 1;
-        n->user_space = NVME_MAX_USER_SIZE;
+        n->total_size = NVME_MAX_USER_SIZE;
     }
     if (n->drop_rate != 0 && n->drop_rate < NVME_MIN_DROP_RATE) {
         LOG_NORM("drop rate too low, setting to:%d", NVME_MIN_DROP_RATE);
@@ -1139,9 +1174,15 @@ static int pci_nvme_init(PCIDevice *pci_dev)
         LOG_NORM("Fultondale index to high:%d, set to 1", n->fultondale);
         n->fultondale = 1;
     }
+    if (n->lba_index > NO_LBA_FORMATS) {
+        LOG_NORM("Lba index too high:%d, set to 0", n->lba_index);
+        n->lba_index = 0;
+    }
 
     n->instance = instance++;
     n->disk = (DiskInfo **)qemu_mallocz(sizeof(DiskInfo *)*n->num_namespaces);
+    n->available_space = (n->total_size - ((n->num_namespaces -
+        n->num_user_namespaces) * n->ns_size)) * BYTES_PER_MB;
 
     n->nn_vector_size = (n->num_namespaces + sizeof(unsigned long)-1) /
         sizeof(unsigned long);
@@ -1326,13 +1367,14 @@ static PCIDeviceInfo nvme_info = {
     .qdev.props = (Property[]) {
         DEFINE_PROP_UINT32("namespaces", NVMEState, num_namespaces, 1),
         DEFINE_PROP_UINT32("size", NVMEState, ns_size, 512),
-        DEFINE_PROP_UINT64("uspace", NVMEState, user_space, 0),
+        DEFINE_PROP_UINT32("total_size", NVMEState, total_size, NVME_MAX_USER_SIZE),
         DEFINE_PROP_UINT32("unamespaces", NVMEState, num_user_namespaces, 0),
         DEFINE_PROP_UINT32("brnl", NVMEState, brnl, 0),
         DEFINE_PROP_UINT32("drop", NVMEState, drop_rate, 0),
         DEFINE_PROP_UINT32("fail", NVMEState, fail_rate, 0),
         DEFINE_PROP_UINT32("fultondale", NVMEState, fultondale, 0),
         DEFINE_PROP_UINT32("security", NVMEState, security, 0),
+        DEFINE_PROP_UINT32("lba_index", NVMEState, lba_index, 0),
         DEFINE_PROP_END_OF_LIST(),
     }
 };
@@ -1354,7 +1396,7 @@ static inline void _nvme_check_size(void)
     BUILD_BUG_ON(sizeof(NVMECmd) != 64);
     BUILD_BUG_ON(sizeof(NVMECmdRead) != 64);
     BUILD_BUG_ON(sizeof(NVMECmdWrite) != 64);
-    BUILD_BUG_ON(sizeof(NVMEIdentifyPowerDesc) != 32);
+    BUILD_BUG_ON(sizeof(PowerStateDescriptor) != 32);
     BUILD_BUG_ON(sizeof(NVMECQE) != 16);
     BUILD_BUG_ON(sizeof(NVMECtrlCap) != 8);
     BUILD_BUG_ON(sizeof(NVMECtrlConf) != 8);

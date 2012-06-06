@@ -86,6 +86,19 @@ git clone git@github.com:nvmeqemu/nvmeqemu.git
     2. Additional command line options:
             You can configure the number of namespaces and their sizes from the command line. The options are: namespaces=<number_of_namespaces> and size=<size_in_MB>. These options go after the "-device namespace". Example
             sudo ./qemu-system-x86_64 -m 1024 -hda <path_to_virtual_HD>/<your_virtual_HD_filename.img> -device nvme,namespace=1,size=1024 -smp 2
-            The program limits the number of namespaces to 16 per device and 8GB in size. There will be 1 namespace of 512 MB by default.
-            You can define the number of namespaces reserved so that users can create them with options unamespaces and reserve the size with usize, in MB.
+            The program limits the number of namespaces to 16 per device and 8GB in size. There will be 1 namespace of 512 MB by default if no options given.
+
+            Full list of -device nvme options:
+
+            namespaces=<number_of_namespaces>  : the maximum number of namespaces the device can have
+            unamespaces=<number_of_namespaces> : number of namespaces to reserve for the user to create. Must be <= namespaces.
+            size=<size_in_MB>                  : size each automatically created namespace will be.
+            total_size=<size_in_MB>            : total size of the nvme device, with additional capacity available to create namespaces with.
+            lba_index=<index>                  : select the lba format index that the automatically created namespaces will use.
+            drop=<drop_rate>                   : error injection, 1 in <drop_rate> chance for an io to be dropped by the controller.
+            fail=<fail_rate>                   : error injection, 1 in <fail_rate> chance for an io to be returned in failure.
+            brnl=<enable>                      : special mode to setup with pre-formatted namespaces for brnl.
+            fultondale=<enable>                : special mode to enable fultondale striping.
+            security=<enable>                  : special mode to boot the device with security enabled, password: "Verify!!".
+
 

@@ -1015,7 +1015,7 @@ static void read_identify_cns(NVMEState *n)
         disk->idtfy_ns.nuse = 0;
         disk->idtfy_ns.nlbaf = NO_LBA_FORMATS;
         disk->idtfy_ns.flbas = n->lba_index;
-        disk->idtfy_ns.nsfeat = NVME_NSFEAT_READ_ERR;
+        disk->idtfy_ns.nsfeat = 0;
 
         /* meta data capabilities */
         disk->idtfy_ns.mc = 1 << 1 | 1 << 0;

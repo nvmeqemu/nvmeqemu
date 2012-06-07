@@ -721,7 +721,7 @@ static uint32_t adm_cmd_get_log_page(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
 {
     uint32_t len;
-    LOG_NORM("%s(): copying %lu data into addr %lu",
+    LOG_NORM("%s(): copying %lu data into addr %#lx",
         __func__, sizeof(*n->idtfy_ctrl), cmd->prp1);
 
     len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
@@ -797,9 +797,9 @@ static uint32_t adm_cmd_identify(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         ret = adm_cmd_id_ctrl(n, cmd);
     } else {
         /* Check for name space */
-        if (c->nsid == 0 || (c->nsid > n->num_namespaces)) {
+        if (c->nsid == 0 || (c->nsid > n->idtfy_ctrl->nn)) {
             LOG_NORM("%s(): Invalid namespace id:%d, valid range:1 - %d",
-                __func__, c->nsid, n->num_namespaces);
+                __func__, c->nsid, n->idtfy_ctrl->nn);
             sf->sc = NVME_SC_INVALID_NAMESPACE;
             return FAIL;
         }

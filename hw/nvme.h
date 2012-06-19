@@ -1295,6 +1295,26 @@ typedef struct FILERead {
     char *cfg_name;
 } FILERead;
 
+/* DSM context attributes */
+typedef struct CtxAttrib {
+    uint16_t AF        : 4;      /* access frequency */
+    uint16_t AL        : 2;      /* access latency */
+    uint16_t reserved0 : 2;
+    uint16_t SR        : 1;      /* sequential read range */
+    uint16_t SW        : 1;      /* sequential write range */
+    uint16_t WP        : 1;      /* write prepared */
+    uint16_t reserved1 : 13;
+    uint16_t CAS       : 8;      /* cmd access size */
+} __attribute__((__packed__)) CtxAttrib;
+
+
+/* DSM range definition */
+typedef struct RangeDef {
+    struct CtxAttrib ctxAttrib;
+    uint32_t  length;
+    uint64_t  slba;
+} __attribute__((__packed__)) RangeDef;
+
 enum {PCI_SPACE = 0, NVME_SPACE = 1};
 
 /* Initialize IO thread */
@@ -1308,6 +1328,13 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     NVMEIOSQueue *sq);
 uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     uint32_t pdid);
+
+/* NVM dataset management cmd processing */
+uint8_t nvme_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
+
+/* All NVM cmd processing */
+uint8_t nvme_command_set(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
+    NVMEIOSQueue *sq);
 
 /* Storage Disk */
 int nvme_open_storage_disks(NVMEState *n);

@@ -142,7 +142,8 @@ int process_sq(NVMEState *n, uint16_t sq_id)
         }
     } else if (!n->cq[cq_id].pdid) {
         /* TODO add support for IO commands with different sizes of Q elems */
-        if (nvme_io_command(n, &sqe, &cqe, &n->sq[sq_id]) == NVME_NO_COMPLETE) {
+        if (nvme_command_set(n, &sqe, &cqe, &n->sq[sq_id])
+            == NVME_NO_COMPLETE) {
             return 0;
         }
     } else if (n->use_aon) {

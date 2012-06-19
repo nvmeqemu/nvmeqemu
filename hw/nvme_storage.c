@@ -6,6 +6,7 @@
  *    Krzysztof Wierzbicki <krzysztof.wierzbicki@intel.com>
  *    Patrick Porlan <patrick.porlan@intel.com>
  *    Nisheeth Bhat <nisheeth.bhat@intel.com>
+ *    Sravan Kumar Thokala <sravan.kumar.thokala@intel.com>
  *    Keith Busch <keith.busch@intel.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -24,7 +25,15 @@
 #include "nvme.h"
 #include "nvme_debug.h"
 #include <sys/mman.h>
+#include <assert.h>
 
+#define MASK_AD         0x4
+#define MASK_IDW        0x2
+#define MASK_IDR        0x1
+
+static uint8_t read_dsm_ranges(uint64_t range_prp1, uint64_t range_prp2,
+    uint8_t *buffer_addr, uint64_t *data_size_p);
+static void dsm_dealloc(DiskInfo *disk, uint64_t slba, uint64_t nlb);
 
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len)
@@ -157,6 +166,18 @@ static uint8_t check_read_blocks(DiskInfo *disk, uint64_t slba, uint64_t nlb)
         partial ? NVME_AON_READ_PARTIAL_UNALLOCATED_BLOCK : 0;
 }
 
+/*********************************************************************
+    Function     :    nvme_update_stats
+    Description  :    Updates the Namespace Utilization and enqueues
+                      async smart log information for NVME disk
+    Return Type  :    void
+
+    Arguments    :    NVMEState * : Pointer to NVME device State
+                      DiskInfo  * : Pointer to disk info
+                      uint8_t     : Cmd opcode
+                      uint64_t    : starting LBA
+                      uint64_t    : Number of LBA
+*********************************************************************/
 static void nvme_update_stats(NVMEState *n, DiskInfo *disk, uint8_t opcode,
     uint64_t slba, uint16_t nlb)
 {
@@ -201,6 +222,17 @@ static void nvme_update_stats(NVMEState *n, DiskInfo *disk, uint8_t opcode,
     }
 }
 
+/*********************************************************************
+    Function     :    nvme_io_command
+    Description  :    NVME Read or write cmd processing.
+
+    Return Type  :    uint8_t
+
+    Arguments    :    NVMEState * : Pointer to NVME device State
+                      NVMECmd  *  : Pointer to SQ entries
+                      NVMECQE *   : Pointer to CQ entries
+                      NVMEIOSQueue * : Pointer to SQ mem
+*********************************************************************/
 uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     NVMEIOSQueue *sq)
 {
@@ -215,6 +247,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
 
     sf->sc = NVME_SC_SUCCESS;
     LOG_DBG("%s(): called", __func__);
+
 
     if (!security_state_unlocked(n)) {
         LOG_NORM("%s(): invalid security state '%c' for IO", __func__, n->s);
@@ -242,6 +275,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     }
 
     disk = n->disk[e->nsid - 1];
+
     if ((e->slba + e->nlb) >= disk->idtfy_ns.nsze) {
         LOG_NORM("%s(): LBA out of range", __func__);
         sf->sc = NVME_SC_LBA_RANGE;
@@ -790,6 +824,160 @@ int make_fs(void)
 
 /* end brnl stuff */
 
+/*********************************************************************
+    Function     :    read_dsm_ranges
+    Description  :    Read range definition data buffer specified
+                      in cmd through prp1 and prp2.
+
+    Return Type  :    uint8_t
+
+    Arguments    :    uint64_t    : PRP1
+                      uint64_t    : PRP2
+                      uint8_t   * : Pointer to target buffer location
+                      uint64_t  * : total data to be copied to target
+                                    buffer
+*********************************************************************/
+static uint8_t read_dsm_ranges(uint64_t range_prp1, uint64_t range_prp2,
+    uint8_t *buffer_addr, uint64_t *data_size_p)
+{
+    uint64_t data_len;
+
+    /* Data Len to be written per page basis */
+    data_len = PAGE_SIZE - (range_prp1 % PAGE_SIZE);
+    if (data_len > *data_size_p) {
+        data_len = *data_size_p;
+    }
+
+    nvme_dma_mem_read(range_prp1, buffer_addr, data_len);
+    *data_size_p = *data_size_p - data_len;
+    if (*data_size_p) {
+        buffer_addr = buffer_addr + data_len;
+        nvme_dma_mem_read(range_prp2, buffer_addr, *data_size_p);
+    }
+
+    return NVME_SC_SUCCESS;
+}
+
+/*********************************************************************
+    Function     :    dsm_dealloc
+    Description  :    De-allocation feature of dataset management cmd.
+
+    Return Type  :    void
+
+    Arguments    :    DiskInfo * : Pointer to NVME device State
+                      uint64_t   : Starting LBA
+                      uint64_t   : number of LBAs
+*********************************************************************/
+static void dsm_dealloc(DiskInfo *disk, uint64_t slba, uint64_t nlb)
+{
+    uint64_t index;
+
+    /* Update the namespace utilization and reset the bit positions */
+    for (index = slba; index < (nlb + slba); index++) {
+        if ((disk->ns_util[index / 8]) & (1 << (index % 8))) {
+            disk->ns_util[(index / 8)] ^= (1 << (index % 8));
+            assert(disk->idtfy_ns.nuse > 0);
+            disk->idtfy_ns.nuse--;
+        }
+    }
+}
+
+/*********************************************************************
+    Function     :    nvme_dsm_command
+    Description  :    Dataset management command
+
+    Return Type  :    uint8_t
+
+    Arguments    :    NVMEState * : Pointer to NVME device State
+                      NVMECmd   * : Pointer to SQ cmd
+                      NVMECQE   * : Pointer to CQ completion entries
+*********************************************************************/
+uint8_t nvme_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
+{
+    uint16_t nr, i;
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    DiskInfo *disk;
+    uint8_t range_buff[PAGE_SIZE];
+    RangeDef *range_defs = (RangeDef *)range_buff;
+    uint64_t slba, nlb;
+    uint64_t buff_size;
+
+    LOG_NORM("%s(): called", __func__);
+    sf->sc = NVME_SC_SUCCESS;
+
+    disk = n->disk[sqe->nsid - 1];
+    nr = (sqe->cdw10 & 0xFF) + 1; /* Convert num ranges to 1-based value */
+    buff_size = nr * sizeof(RangeDef);
+    assert(buff_size <= PAGE_SIZE);
+
+    read_dsm_ranges(sqe->prp1, sqe->prp2, range_buff, &buff_size);
+
+    LOG_NORM("Processing ranges %d, attribute %d", nr, sqe->cdw11);
+    /* Process dsm cmd for attribute deallocate. */
+    if (sqe->cdw11 & MASK_AD) {
+        for (i = 0; i < nr; i++, range_defs++) {
+            slba = range_defs->slba;
+            nlb = range_defs->length;
+            if ((slba + nlb) > disk->idtfy_ns.ncap) {
+                LOG_ERR("Range #%d exceeds namespace capacity(%ld)", (i + 1),
+                    disk->idtfy_ns.ncap);
+                sf->sc = NVME_SC_LBA_RANGE;
+                sf->dnr = 1;
+                return FAIL;
+            }
+            LOG_NORM("DSM deallocate cmd for Range #%d, slba = %ld, nlb = %ld",
+                i, slba, nlb);
+            dsm_dealloc(disk, slba, nlb);
+        }
+    }
+    return SUCCESS;
+}
+
+/*********************************************************************
+    Function     :    nvme_command_set
+    Description  :    All NVM command set processing
+
+    Return Type  :    uint8_t
+
+    Arguments    :    NVMEState * : Pointer to NVME device State
+                      NVMECmd  *  : Pointer to SQ entries
+                      NVMECQE *   : Pointer to CQ entries
+*********************************************************************/
+uint8_t nvme_command_set(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
+    NVMEIOSQueue *sq)
+{
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+
+    /* As of NVMe spec rev 1.0b "All NVM cmds use the CMD.DW1 (NSID) field".
+     * Thus all NVM cmd set cmds must check for illegal namespaces up front */
+    if (sqe->nsid == 0 || (sqe->nsid > n->idtfy_ctrl->nn)) {
+        LOG_NORM("%s(): Invalid nsid:%u", __func__, sqe->nsid);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        return FAIL;
+    }
+
+    if (sqe->opcode == NVME_CMD_READ || (sqe->opcode == NVME_CMD_WRITE)){
+        return nvme_io_command(n, sqe, cqe, sq);
+    } else if (sqe->opcode == NVME_CMD_DSM) {
+        return nvme_dsm_command(n, sqe, cqe);
+    } else if (sqe->opcode == NVME_CMD_FLUSH) {
+        return NVME_SC_SUCCESS;
+    } else {
+        LOG_NORM("%s():Wrong IO opcode:\t\t0x%02x", __func__, sqe->opcode);
+        sf->sc = NVME_SC_INVALID_OPCODE;
+        return FAIL;
+    }
+}
+/*********************************************************************
+    Function     :    nvme_create_meta_disk
+    Description  :    Creates a meta disk and sets the mapping address
+
+    Return Type  :    int
+
+    Arguments    :    uint32_t *   : Instance number of the nvme device
+                      uint32_t *   : Namespace id
+                      DiskInfo *   : NVME disk to create storage for
+*********************************************************************/
 static int nvme_create_meta_disk(uint32_t instance, uint32_t nsid,
     DiskInfo *disk)
 {
@@ -933,6 +1121,13 @@ int nvme_create_storage_disks(NVMEState *n)
     return ret;
 }
 
+/*********************************************************************
+    Function     :    nvme_close_meta_disk
+    Description  :    Deletes NVME meta storage Disk
+    Return Type  :    int (0:1 Success:Failure)
+
+    Arguments    :    DiskInfo * : Pointer to NVME disk
+*********************************************************************/
 static int nvme_close_meta_disk(DiskInfo *disk)
 {
     if (disk->meta_mapping_addr != NULL) {

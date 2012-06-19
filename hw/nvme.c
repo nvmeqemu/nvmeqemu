@@ -1403,6 +1403,8 @@ static inline void _nvme_check_size(void)
     BUILD_BUG_ON(sizeof(NVMEVersion) != 4);
     BUILD_BUG_ON(sizeof(NVMECtrlStatus) != 4);
     BUILD_BUG_ON(sizeof(NVMEStatusField) != 2);
+    BUILD_BUG_ON(sizeof(RangeDef) != 16);
+    BUILD_BUG_ON(sizeof(CtxAttrib) != 4);
 }
 
 /*********************************************************************

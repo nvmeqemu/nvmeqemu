@@ -146,7 +146,7 @@ int process_sq(NVMEState *n, uint16_t sq_id)
         }
     } else {
        /* TODO add support for IO commands with different sizes of Q elements */
-        nvme_io_command(n, &sqe, &cqe);
+       nvme_command_set(n, &sqe, &cqe);
     }
 
     /* Filling up the CQ entry */

@@ -26,7 +26,6 @@
 
 
 /* queue is full if tail is just behind head. */
-
 uint8_t is_cq_full(NVMEState *n, uint16_t qid)
 {
     return (((n->cq[qid].tail + 1) % n->cq[qid].size) == n->cq[qid].head);
@@ -35,8 +34,6 @@ uint8_t is_cq_full(NVMEState *n, uint16_t qid)
 static void incr_sq_head(NVMEIOSQueue *q)
 {
     q->head = (q->head + 1) % q->size;
-    LOG_DBG("%s(): (SQID, HD, SZ) = (%d, %d, %d)", __func__,
-        q->id, q->head, q->size);
 }
 
 void incr_cq_tail(NVMEIOCQueue *q)
@@ -110,8 +107,7 @@ int process_sq(NVMEState *n, uint16_t sq_id)
     NVMECQE cqe;
     NVMEStatusField *sf = (NVMEStatusField *) &cqe.status;
 
-    if (n->sq[sq_id].dma_addr == 0 || n->cq[n->sq[sq_id].cq_id].dma_addr
-        == 0) {
+    if (adm_check_sqid(n, sq_id)) {
         LOG_ERR("Required Submission/Completion Queue does not exist");
         n->sq[sq_id].head = n->sq[sq_id].tail = 0;
         return -1;
@@ -144,9 +140,17 @@ int process_sq(NVMEState *n, uint16_t sq_id)
             /* completion entry is done separately */
             return 0;
         }
+    } else if (!n->cq[cq_id].pdid) {
+        /* TODO add support for IO commands with different sizes of Q elems */
+        if (nvme_command_set(n, &sqe, &cqe, &n->sq[sq_id])
+            == NVME_NO_COMPLETE) {
+            return 0;
+        }
+    } else if (n->use_aon) {
+        /* aon user read/write command */
+        nvme_aon_io_command(n, &sqe, &cqe, n->cq[cq_id].pdid);
     } else {
-       /* TODO add support for IO commands with different sizes of Q elements */
-       nvme_command_set(n, &sqe, &cqe);
+        cqe.status.sc = NVME_SC_INVALID_OPCODE;
     }
 
     /* Filling up the CQ entry */

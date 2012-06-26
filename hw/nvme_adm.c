@@ -1469,6 +1469,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     NVMEIdentifyNamespace ns;
+    uint32_t len;
     uint32_t nsid;
     uint64_t ns_bytes;
     uint32_t block_shift;
@@ -1482,11 +1483,6 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     }
     if (cmd->prp1 == 0) {
         LOG_NORM("%s(): prp1 is NULL", __func__);
-        sf->sc = NVME_SC_INVALID_FIELD;
-        return FAIL;
-    }
-    if (cmd->prp1 % PAGE_SIZE != 0) {
-        LOG_NORM("%s(): prp1:%p not aligned", __func__, (uint8_t *)cmd->prp1);
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
@@ -1506,7 +1502,18 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     LOG_NORM("%s(): called", __func__);
 
-    nvme_dma_mem_read((target_phys_addr_t)cmd->prp1, (uint8_t *)&ns, PAGE_SIZE);
+    len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
+    nvme_dma_mem_read((target_phys_addr_t)cmd->prp1, (uint8_t *)&ns, len);
+    if (len != sizeof(ns)) {
+        if (cmd->prp2 == 0) {
+            LOG_NORM("%s(): prp2 is NULL", __func__);
+            sf->sc = NVME_SC_INVALID_FIELD;
+            return FAIL;
+        }
+        nvme_dma_mem_write(cmd->prp2,
+            (uint8_t *) ((uint8_t *) ((uint8_t *)&ns) + len),
+                (sizeof(ns) - len));
+    }
 
     ns.nlbaf = n->aon_ctrl_vs->nlbaf;
     memcpy(ns.lbaf, n->aon_ctrl_vs->lbaf, sizeof(n->aon_ctrl_vs->lbaf));
@@ -1604,7 +1611,7 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     NVMEIdentifyNamespace ns;
     DiskInfo *disk;
-    uint32_t nsid, lba_idx, block_size;
+    uint32_t len, nsid, lba_idx, block_size;
     uint64_t ns_bytes, current_bytes;
 
     sf->sc = NVME_SC_SUCCESS;
@@ -1625,8 +1632,8 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }
-    if (cmd->prp1 % PAGE_SIZE != 0) {
-        LOG_NORM("%s(): prp1:%p not aligned", __func__, (uint8_t *)cmd->prp1);
+    if (cmd->prp1 == 0) {
+        LOG_NORM("%s(): NULL prp1:%p", __func__, (uint8_t *)cmd->prp1);
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
@@ -1634,7 +1641,18 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     LOG_NORM("%s(): called nsid:%d", __func__, nsid);
 
     disk = n->disk[nsid - 1];
-    nvme_dma_mem_read((target_phys_addr_t)cmd->prp1, (uint8_t *)&ns, PAGE_SIZE);
+    len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
+    nvme_dma_mem_read((target_phys_addr_t)cmd->prp1, (uint8_t *)&ns, len);
+    if (len != sizeof(ns)) {
+        if (cmd->prp2 == 0) {
+            LOG_NORM("%s(): prp2 is NULL", __func__);
+            sf->sc = NVME_SC_INVALID_FIELD;
+            return FAIL;
+        }
+        nvme_dma_mem_write(cmd->prp2,
+            (uint8_t *) ((uint8_t *) ((uint8_t *)&ns) + len),
+                (sizeof(ns) - len));
+    }
 
     lba_idx = disk->idtfy_ns.flbas & NVME_FLBAS_LBA_MASK;
     block_size = 1 << (disk->idtfy_ns.lbaf[lba_idx].lbads);

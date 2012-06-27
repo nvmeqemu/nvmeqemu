@@ -1324,13 +1324,8 @@ int nvme_init_io_thread(NVMEState *n);
 uint8_t nvme_admin_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
 
 /* IO command processing */
-uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
-    NVMEIOSQueue *sq);
 uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     uint32_t pdid);
-
-/* NVM dataset management cmd processing */
-uint8_t nvme_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe);
 
 /* All NVM cmd processing */
 uint8_t nvme_command_set(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,

@@ -31,11 +31,6 @@
 #define MASK_IDW        0x2
 #define MASK_IDR        0x1
 
-static uint8_t read_dsm_ranges(uint64_t range_prp1, uint64_t range_prp2,
-    uint8_t *buffer_addr, uint64_t *data_size_p);
-static void dsm_dealloc(DiskInfo *disk, uint64_t slba, uint64_t nlb);
-
-
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len)
 {
     cpu_physical_memory_rw(addr, buf, len, 0);
@@ -233,7 +228,7 @@ static void nvme_update_stats(NVMEState *n, DiskInfo *disk, uint8_t opcode,
                       NVMECQE *   : Pointer to CQ entries
                       NVMEIOSQueue * : Pointer to SQ mem
 *********************************************************************/
-uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
+static uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     NVMEIOSQueue *sq)
 {
     NVME_rw *e = (NVME_rw *)sqe;
@@ -248,26 +243,12 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     sf->sc = NVME_SC_SUCCESS;
     LOG_DBG("%s(): called", __func__);
 
-
     if (!security_state_unlocked(n)) {
         LOG_NORM("%s(): invalid security state '%c' for IO", __func__, n->s);
         sf->sc = NVME_SC_CMD_SEQ_ERROR;
         return FAIL;
     }
-
-    /* As of NVMe spec rev 1.0b "All NVM cmds use the CMD.DW1 (NSID) field".
-     * Thus all NVM cmd set cmds must check for illegal namespaces up front */
-    if (e->nsid == 0 || (e->nsid > n->idtfy_ctrl->nn)) {
-        LOG_NORM("%s(): Invalid nsid:%u", __func__, e->nsid);
-        sf->sc = NVME_SC_INVALID_NAMESPACE;
-        return FAIL;
-    }
-
-    if (sqe->opcode == NVME_CMD_FLUSH) {
-        return NVME_SC_SUCCESS;
-    } else if (sqe->opcode == NVME_CMD_DSM) {
-        return NVME_SC_SUCCESS;
-    } else if ((sqe->opcode != NVME_CMD_READ) &&
+    if ((sqe->opcode != NVME_CMD_READ) &&
              (sqe->opcode != NVME_CMD_WRITE)) {
         LOG_NORM("%s(): Wrong IO opcode:%#02x", __func__, sqe->opcode);
         sf->sc = NVME_SC_INVALID_OPCODE;
@@ -277,7 +258,8 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     disk = n->disk[e->nsid - 1];
 
     if ((e->slba + e->nlb) >= disk->idtfy_ns.nsze) {
-        LOG_NORM("%s(): LBA out of range", __func__);
+        LOG_NORM("%s(): LBA out of range slba:%lu nlb:%u nsze:%lu", __func__,
+            e->slba, e->nlb, disk->idtfy_ns.nsze);
         sf->sc = NVME_SC_LBA_RANGE;
         return FAIL;
     } else if ((e->slba + e->nlb) >= disk->idtfy_ns.ncap) {
@@ -871,11 +853,11 @@ static uint8_t read_dsm_ranges(uint64_t range_prp1, uint64_t range_prp2,
 static void dsm_dealloc(DiskInfo *disk, uint64_t slba, uint64_t nlb)
 {
     uint64_t index;
+    unsigned long *addr = (unsigned long *)disk->ns_util;
 
     /* Update the namespace utilization and reset the bit positions */
     for (index = slba; index < (nlb + slba); index++) {
-        if ((disk->ns_util[index / 8]) & (1 << (index % 8))) {
-            disk->ns_util[(index / 8)] ^= (1 << (index % 8));
+        if (test_and_clear_bit(index, addr)) {
             assert(disk->idtfy_ns.nuse > 0);
             disk->idtfy_ns.nuse--;
         }
@@ -892,7 +874,7 @@ static void dsm_dealloc(DiskInfo *disk, uint64_t slba, uint64_t nlb)
                       NVMECmd   * : Pointer to SQ cmd
                       NVMECQE   * : Pointer to CQ completion entries
 *********************************************************************/
-uint8_t nvme_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
+static uint8_t nvme_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 {
     uint16_t nr, i;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
@@ -912,7 +894,7 @@ uint8_t nvme_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
 
     read_dsm_ranges(sqe->prp1, sqe->prp2, range_buff, &buff_size);
 
-    LOG_NORM("Processing ranges %d, attribute %d", nr, sqe->cdw11);
+    LOG_NORM("Processing ranges %d, attribute %#x", nr, sqe->cdw11);
     /* Process dsm cmd for attribute deallocate. */
     if (sqe->cdw11 & MASK_AD) {
         for (i = 0; i < nr; i++, range_defs++) {
@@ -950,7 +932,8 @@ uint8_t nvme_command_set(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
 
     /* As of NVMe spec rev 1.0b "All NVM cmds use the CMD.DW1 (NSID) field".
      * Thus all NVM cmd set cmds must check for illegal namespaces up front */
-    if (sqe->nsid == 0 || (sqe->nsid > n->idtfy_ctrl->nn)) {
+    if (sqe->nsid == 0 || (sqe->nsid > n->idtfy_ctrl->nn) ||
+            n->disk[sqe->nsid - 1] == NULL) {
         LOG_NORM("%s(): Invalid nsid:%u", __func__, sqe->nsid);
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
@@ -968,6 +951,7 @@ uint8_t nvme_command_set(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         return FAIL;
     }
 }
+
 /*********************************************************************
     Function     :    nvme_create_meta_disk
     Description  :    Creates a meta disk and sets the mapping address

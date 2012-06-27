@@ -160,7 +160,6 @@ int process_sq(NVMEState *n, uint16_t sq_id)
 
     sf->p = n->cq[cq_id].phase_tag;
     sf->m = 0;
-    sf->dnr = 0; /* TODO add support for dnr */
 
     post_cq_entry(n, &n->cq[cq_id], &cqe);
 

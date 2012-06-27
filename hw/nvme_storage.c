@@ -570,6 +570,14 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         sf->sc = NVME_SC_NS_NOT_READY;
         return FAIL;
     }
+    if (n->idtfy_ctrl->mdts && data_size > PAGE_SIZE *
+                (1 << (n->idtfy_ctrl->mdts))) {
+        LOG_ERR("%s(): data size:%ld exceeds max:%ld", __func__,
+            data_size, ((uint64_t)PAGE_SIZE) * (1 << (n->idtfy_ctrl->mdts)));
+        sf->sc = NVME_SC_INVALID_FIELD;
+        sf->dnr = 1;
+        return FAIL;
+    }
 
     mapping_addr = disk->mapping_addr + file_offset;
 

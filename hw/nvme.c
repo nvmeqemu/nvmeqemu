@@ -1096,6 +1096,14 @@ static void read_identify_cns(NVMEState *n)
     power->rwl = 0x1;
 }
 
+static void fw_slot_logpage_init(NVMEState *n)
+{
+    n->last_fw_slot = 1;
+    memset(&(n->fw_slot_log), 0x0, sizeof(n->fw_slot_log));
+    n->fw_slot_log.afi = 1;
+    strncpy((char *)&(n->fw_slot_log.frs1[0]), "1.0", 3);
+}
+
 /*********************************************************************
     Function     :    pci_nvme_init
     Description  :    NVME initialization
@@ -1274,6 +1282,9 @@ static int pci_nvme_init(PCIDevice *pci_dev)
 
     /* Update the Identify Space of the controller */
     read_identify_cns(n);
+
+    /* Update the firmware slots information */
+    fw_slot_logpage_init(n);
 
     if (n->brnl) {
         /* setup namespaces for brnl */

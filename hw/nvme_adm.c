@@ -22,6 +22,7 @@
  */
 
 
+#include <sys/mman.h>
 #include "nvme.h"
 #include "nvme_debug.h"
 
@@ -534,28 +535,25 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
 static uint32_t adm_cmd_fw_log_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
-    NVMEFwSlotInfoLog firmware_info;
+    NVMEFwSlotInfoLog *firmware_info = &(n->fw_slot_log);
     uint32_t len;
 
     LOG_NORM("%s called", __func__);
 
-    if ((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(firmware_info)) {
+    if ((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(*firmware_info)) {
         LOG_NORM("%s: not enough memory, needs %ld, has %d bytes.", __func__,
-                sizeof(firmware_info), (((cmd->cdw10) >> 16) & 0x0000FFFF) * 4);
+                sizeof(*firmware_info), (((cmd->cdw10) >> 16) & 0x0000FFFF) * 4);
         NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
         sf->sc = NVME_SC_INVALID_FIELD;
         return 0;
     }
-    memset(&firmware_info, 0x0, sizeof(firmware_info));
 
-    firmware_info.afi = n->firmware_slot;
-
-    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), sizeof(firmware_info));
-    nvme_dma_mem_write(cmd->prp1, (uint8_t *)&firmware_info, len);
-    if (len < sizeof(firmware_info)) {
+    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), sizeof(*firmware_info));
+    nvme_dma_mem_write(cmd->prp1, (uint8_t *)firmware_info, len);
+    if (len < sizeof(*firmware_info)) {
         nvme_dma_mem_write(cmd->prp2,
-            (uint8_t *)((uint8_t *)&firmware_info + len),
-            sizeof(firmware_info) - len);
+            (uint8_t *)((uint8_t *)firmware_info + len),
+            sizeof(*firmware_info) - len);
     }
     return 0;
 }
@@ -1096,10 +1094,32 @@ static uint32_t adm_cmd_get_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     return res;
 }
 
+static uint64_t DJBHash(uint8_t* str, uint32_t len)
+{
+    uint64_t hash = 5381;
+    uint64_t i    = 0;
+
+    for(i = 0; i < len; str++, i++) {
+        hash = ((hash << 5) + hash) + (*str);
+    }
+
+    return hash;
+}
+
 static uint32_t adm_cmd_act_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
+    int fd;
+    unsigned sz_fw_buf;
+    struct stat sb;
+    char fw_file_name[] = "nvme_firmware_disk.img";
+    uint8_t *fw_buf;
+    char fw_hash[9];
+    uint8_t *target_frs;
+
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     uint32_t res = 0;
+
+    LOG_NORM("%s(): called", __func__);
 
     if (cmd->opcode != NVME_ADM_CMD_ACTIVATE_FW) {
         LOG_NORM("%s(): Invalid opcode %x", __func__, cmd->opcode);
@@ -1118,9 +1138,55 @@ static uint32_t adm_cmd_act_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return FAIL;
     }
 
-    n->firmware_slot = cmd->cdw10 & 0x7;
+    fd = open(fw_file_name, O_RDWR, S_IRUSR | S_IWUSR);
+    if (fd < 0) {
+        LOG_ERR("Error while creating the storage");
+        return FAIL;
+    }
+    if (stat(fw_file_name, &sb) != 0) {
+        LOG_ERR("%s(): 'stat' failed for '%s'", __func__, fw_file_name);
+        res = FAIL;
+        goto close;
+    }
+    sz_fw_buf = sb.st_size;
 
-    LOG_NORM("%s(): called", __func__);
+    fw_buf = mmap(NULL, sz_fw_buf, PROT_READ, MAP_SHARED, fd, 0);
+    if (fw_buf == MAP_FAILED) {
+        LOG_ERR("Error mapping FW disk backing file");
+        res = FAIL;
+        goto close;
+    }
+
+    snprintf(fw_hash, 9, "%lx", DJBHash(fw_buf, sz_fw_buf));
+
+    if ((cmd->cdw10 & 0x7) > 0)
+        n->fw_slot_log.afi = cmd->cdw10 & 0x7;
+    else {
+        uint8_t i;
+        uint64_t *accessor = (uint64_t *)&(n->fw_slot_log);
+
+        for (i = 1; i <= 7; i++) {
+            if(*(accessor + i) == 0) {
+                n->fw_slot_log.afi = i;
+                break;
+            }
+        }
+        if (i == 8)
+            n->fw_slot_log.afi = ((n->last_fw_slot + 1) > 7) ? 1 :
+                                  (n->last_fw_slot + 1);
+    }
+    target_frs = (uint8_t *)&(n->fw_slot_log) + (n->fw_slot_log.afi * 8);
+
+    memcpy ((char *)target_frs, fw_hash, 8);
+    memcpy ((char *)n->idtfy_ctrl->fr, fw_hash, 8);
+    n->last_fw_slot = n->fw_slot_log.afi;
+
+    munmap(fw_buf, sz_fw_buf);
+    if(ftruncate(fd, 0) < 0)
+        LOG_ERR("Error truncating backing firmware file");
+
+ close:
+    close(fd);
     return res;
 }
 
@@ -1264,12 +1330,12 @@ static uint32_t adm_cmd_dl_fw(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return FAIL;
     }
 
-    sz_fw_buf = cmd->cdw10 * sizeof(uint8_t)*4;
+    sz_fw_buf = (cmd->cdw10 + 1) * sizeof(uint8_t) * 4;
     fw_buf = (uint8_t *) qemu_mallocz(sz_fw_buf);
     if (fw_buf == NULL) {
         return FAIL;
     }
-    LOG_NORM("sz_fw_buf = %d\n", sz_fw_buf);
+    LOG_DBG("sz_fw_buf = %d", sz_fw_buf);
     res = fw_get_img(n, cmd, cqe, fw_buf, sz_fw_buf);
 
     qemu_free(fw_buf);

@@ -596,7 +596,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         uint64_t prp_list[prp_entries];
         uint64_t data_len, mem_addr;
 
-        nvme_dma_mem_read(stag->prp + prp_index * stag->smps,
+        nvme_dma_mem_read(stag->prp + prp_index * sizeof(uint64_t),
             (uint8_t *)prp_list, prp_entries * sizeof(uint64_t));
 
         mem_addr = prp_list[0] + (prp_offset % stag->smps);

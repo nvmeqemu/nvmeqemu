@@ -540,9 +540,9 @@ static uint32_t adm_cmd_fw_log_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     LOG_NORM("%s called", __func__);
 
-    if ((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(*firmware_info)) {
+    if (((cmd->cdw10 >> 16) & 0xfff) * 4 < sizeof(*firmware_info)) {
         LOG_NORM("%s: not enough memory, needs %ld, has %d bytes.", __func__,
-                sizeof(*firmware_info), (((cmd->cdw10) >> 16) & 0x0000FFFF) * 4);
+                sizeof(*firmware_info), ((cmd->cdw10 >> 16) & 0xfff) * 4);
         NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
         sf->sc = NVME_SC_INVALID_FIELD;
         return 0;
@@ -564,9 +564,9 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     time_t current_seconds;
     NVMESmartLog smart_log;
 
-    if ((((cmd->cdw10) >> 16) & 0x0000FFFF) * 4 < sizeof(smart_log)) {
+    if (((cmd->cdw10 >> 16) & 0xfff) * 4 < sizeof(smart_log)) {
         LOG_NORM("%s: not enough memory, needs %ld, has %d bytes.", __func__,
-                sizeof(smart_log), (((cmd->cdw10) >> 16) & 0x0000FFFF) * 4);
+                sizeof(smart_log), ((cmd->cdw10 >> 16) & 0xfff) * 4);
         NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
         sf->sc = NVME_SC_INVALID_FIELD;
         return 0;

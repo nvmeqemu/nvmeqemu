@@ -97,7 +97,6 @@ git clone git@github.com:nvmeqemu/nvmeqemu.git
             lba_index=<index>                  : select the lba format index that the automatically created namespaces will use.
             drop=<drop_rate>                   : error injection, 1 in <drop_rate> chance for an io to be dropped by the controller.
             fail=<fail_rate>                   : error injection, 1 in <fail_rate> chance for an io to be returned in failure.
-            brnl=<enable>                      : special mode to setup with pre-formatted namespaces for brnl.
             fultondale=<enable>                : special mode to enable fultondale striping.
             security=<enable>                  : special mode to boot the device with security enabled, password: "Verify!!".
 

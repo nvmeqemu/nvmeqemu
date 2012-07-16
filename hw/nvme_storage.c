@@ -709,111 +709,6 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     return NVME_SC_SUCCESS;
 }
 
-/* brnl stuff */
-#include <dirent.h>
-
-void *xrealloc(void);
-int make_fs(void);
-uint32_t write_sb(uint32_t root, uint32_t free);
-struct brnl_dirent *
-write_inode(char *name, uint32_t dirno, uint32_t prev, uint32_t region);
-uint32_t write_file(char *name, uint32_t dirno, uint32_t prev, uint32_t region);
-uint32_t write_dir(char *name, uint32_t dirno, uint32_t prev, uint32_t
-    fake_region);
-
-enum {
-    BRNL_DIR_REGION = 1,
-    BRNL_SUPER_MAGIC = 1818324545,
-};
-
-struct brnl_superblock {
-    uint32_t root_dir_fake_inum;
-    uint32_t root_dir_offset;
-    uint32_t free_space_offset;
-    uint32_t fake_inums_offset;
-};
-
-struct brnl_dirent {
-    char name[256];
-    uint32_t ino;   /* The fake inode this block belongs to */
-    uint8_t len;
-    uint8_t type;
-    uint8_t pad[2];
-    uint32_t prev;
-    uint32_t next;
-    uint32_t region_id; /* Faked for non-files */
-    union {
-        struct {
-            uint32_t brnl_dir_offset;
-        } dir;
-    };
-};
-
-void *data = NULL;
-uint32_t current = 0;
-
-void *xrealloc(void)
-{
-    data = qemu_realloc(data, 512 * (current + 1));
-    if (!data) {
-        exit(1);
-    }
-    memset(data + 512 * current, 0, 512);
-    return data + 512 * current;
-}
-
-uint32_t write_sb(uint32_t root, uint32_t free)
-{
-    struct brnl_superblock *sb = xrealloc();
-    sb->root_dir_offset = root;
-    sb->free_space_offset = free;
-    sb->fake_inums_offset = 2;
-    current = 3;
-    return current;
-}
-
-struct brnl_dirent *
-write_inode(char *name, uint32_t dirno, uint32_t prev, uint32_t region)
-{
-    struct brnl_dirent *de = xrealloc();
-    struct brnl_dirent *de_prev = data + 512 * prev;
-    de->prev = prev;
-    if (prev) {
-        de_prev->next = current;
-    }
-    strcpy(de->name, name);
-    de->ino = dirno;
-    de->len = strlen(name);
-    de->region_id = region;
-    return de;
-}
-
-uint32_t write_file(char *name, uint32_t dirno, uint32_t prev, uint32_t region)
-{
-    struct brnl_dirent *de = write_inode(name, dirno, prev, region);
-    de->type = DT_REG;
-    return current++;
-}
-
-uint32_t write_dir(char *name, uint32_t dirno, uint32_t prev, uint32_t fake_region)
-{
-    struct brnl_dirent *de = write_inode(name, dirno, prev, fake_region);
-    de->type = DT_DIR;
-    de->dir.brnl_dir_offset = current + 1;
-    return current++;
-}
-
-int make_fs(void)
-{
-    uint32_t prev;
-    prev = write_sb(3, 1);
-    prev = write_dir((char *)"..", BRNL_DIR_REGION, 0, BRNL_DIR_REGION);
-    prev = write_file((char *)"apple", BRNL_DIR_REGION, prev, 4);
-    return current * 512;
-}
-
-/* end brnl stuff */
-
 /*********************************************************************
     Function     :    read_dsm_ranges
     Description  :    Read range definition data buffer specified
@@ -1078,11 +973,6 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
 
     LOG_NORM("created disk storage, mapping_addr:%p size:%lu",
         disk->mapping_addr, disk->mapping_size);
-
-    if (n->brnl && nsid == 1) {
-        int len = make_fs();
-        memcpy(disk->mapping_addr, data, len);
-    }
 
     return SUCCESS;
 }

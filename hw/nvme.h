@@ -628,7 +628,6 @@ typedef struct NVMEState {
     uint32_t instance;
     uint32_t num_user_namespaces;
     uint32_t total_size;
-    uint32_t brnl;
     uint32_t drop_rate;
     uint32_t fail_rate;
     uint32_t fultondale;

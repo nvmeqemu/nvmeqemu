@@ -924,67 +924,6 @@ static void read_file(NVMEState *n, uint8_t space)
     }
 }
 
-static void setup_for_brnl(NVMEState *n)
-{
-    DiskInfo *disk;
-
-    /* namespace region 1, brnl metadata */
-    disk = qemu_mallocz(sizeof(*disk));
-    disk->idtfy_ns.nsze = (64 * BYTES_PER_MB) / BYTES_PER_BLOCK;
-    disk->idtfy_ns.ncap = (64 * BYTES_PER_MB) / BYTES_PER_BLOCK;
-    disk->idtfy_ns.nuse = (64 * BYTES_PER_MB) / BYTES_PER_BLOCK;
-    disk->idtfy_ns.nlbaf = 0;
-    disk->idtfy_ns.flbas = 0;
-    disk->idtfy_ns.lbaf[0].ms = 0;
-    disk->idtfy_ns.lbaf[0].lbads = 9;
-    disk->idtfy_ns.lbaf[0].rp = 2;
-
-    n->disk[0] = disk;
-    set_bit(1, n->nn_vector);
-
-    /* namespace region 2, brnl root directory */
-    disk = qemu_mallocz(sizeof(*disk));
-    disk->idtfy_ns.nsze = (1024 * BYTES_PER_MB) / BYTES_PER_BLOCK;
-    disk->idtfy_ns.ncap = (1024 * BYTES_PER_MB) / BYTES_PER_BLOCK;
-    disk->idtfy_ns.nuse = 0;
-    disk->idtfy_ns.nlbaf = 0;
-    disk->idtfy_ns.flbas = 0;
-    disk->idtfy_ns.lbaf[0].ms = 0;
-    disk->idtfy_ns.lbaf[0].lbads = 9;
-    disk->idtfy_ns.lbaf[0].rp = 2;
-
-    n->disk[1] = disk;
-    set_bit(2, n->nn_vector);
-
-    /* namespace region 3, brnl empty entry */
-    disk = qemu_mallocz(sizeof(*disk));
-    disk->idtfy_ns.nsze = 0;
-    disk->idtfy_ns.ncap = 0;
-    disk->idtfy_ns.nuse = 0;
-    disk->idtfy_ns.nlbaf = 0;
-    disk->idtfy_ns.flbas = 0;
-    disk->idtfy_ns.lbaf[0].ms = 0;
-    disk->idtfy_ns.lbaf[0].lbads = 9;
-    disk->idtfy_ns.lbaf[0].rp = 2;
-
-    n->disk[2] = disk;
-    set_bit(3, n->nn_vector);
-
-    /* namespace region 4, brnl "apple" file */
-    disk = qemu_mallocz(sizeof(*disk));
-    disk->idtfy_ns.nsze = (1024 * BYTES_PER_MB) / BYTES_PER_BLOCK;
-    disk->idtfy_ns.ncap = (1024 * BYTES_PER_MB) / BYTES_PER_BLOCK;
-    disk->idtfy_ns.nuse = 0;
-    disk->idtfy_ns.nlbaf = 0;
-    disk->idtfy_ns.flbas = 0;
-    disk->idtfy_ns.lbaf[0].ms = 0;
-    disk->idtfy_ns.lbaf[0].lbads = 9;
-    disk->idtfy_ns.lbaf[0].rp = 2;
-
-    n->disk[3] = disk;
-    set_bit(4, n->nn_vector);
-}
-
 /*********************************************************************
     Function     :    read_identify_cns
     Description  :    Reading in hardcoded values of Identify controller
@@ -1150,12 +1089,6 @@ static int pci_nvme_init(PCIDevice *pci_dev)
                  n->total_size);
         return -1;
     }
-    if (n->brnl) {
-        LOG_NORM("overriding all values for brnl use");
-        n->num_namespaces = NVME_MAX_NUM_NAMESPACES;
-        n->num_user_namespaces = NVME_MAX_NUM_NAMESPACES - 1;
-        n->total_size = NVME_MAX_USER_SIZE;
-    }
     if (n->drop_rate != 0 && n->drop_rate < NVME_MIN_DROP_RATE) {
         LOG_NORM("drop rate too low, setting to:%d", NVME_MIN_DROP_RATE);
         n->drop_rate = NVME_MIN_DROP_RATE;
@@ -1286,11 +1219,6 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     /* Update the firmware slots information */
     fw_slot_logpage_init(n);
 
-    if (n->brnl) {
-        /* setup namespaces for brnl */
-        setup_for_brnl(n);
-    }
-
     /* Reading CC.MPS field */
     memcpy(&mps, &n->cntrl_reg[NVME_CC], WORD);
     mps &= (uint16_t) MASK(4, 7);
@@ -1380,7 +1308,6 @@ static PCIDeviceInfo nvme_info = {
         DEFINE_PROP_UINT32("size", NVMEState, ns_size, 512),
         DEFINE_PROP_UINT32("total_size", NVMEState, total_size, NVME_MAX_USER_SIZE),
         DEFINE_PROP_UINT32("unamespaces", NVMEState, num_user_namespaces, 0),
-        DEFINE_PROP_UINT32("brnl", NVMEState, brnl, 0),
         DEFINE_PROP_UINT32("drop", NVMEState, drop_rate, 0),
         DEFINE_PROP_UINT32("fail", NVMEState, fail_rate, 0),
         DEFINE_PROP_UINT32("fultondale", NVMEState, fultondale, 0),

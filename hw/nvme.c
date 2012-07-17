@@ -898,6 +898,7 @@ static void read_identify_cns(NVMEState *n)
     n->idtfy_ctrl->cqes = 4 << 4 | 4;
     n->idtfy_ctrl->sqes = 6 << 4 | 6;
     n->idtfy_ctrl->oacs = 0x2;  /* set due to adm_cmd_format_nvm() */
+    n->idtfy_ctrl->oacs |= 0x4; /* set for adm_cmd_act_fw() & adm_cmd_act_dl()*/
     n->idtfy_ctrl->oncs = 0x4;  /* dataset mgmt cmd */
 
     n->idtfy_ctrl->vid = 0x8086;
@@ -920,6 +921,14 @@ static void read_identify_cns(NVMEState *n)
 
     power = (struct power_state_description *)&(n->idtfy_ctrl->psdx[32]);
     power->mp = 3;
+}
+
+static void fw_slot_logpage_init(NVMEState *n)
+{
+    n->last_fw_slot = 1;
+    memset(&(n->fw_slot_log), 0x0, sizeof(n->fw_slot_log));
+    n->fw_slot_log.afi = 1;
+    strncpy((char *)&(n->fw_slot_log.frs1[0]), "1.0", 3);
 }
 
 /*********************************************************************
@@ -1035,6 +1044,9 @@ static int pci_nvme_init(PCIDevice *pci_dev)
 
     /* Update the Identify Space of the controller */
     read_identify_cns(n);
+
+    /* Update the firmware slots information */
+    fw_slot_logpage_init(n);
 
     /* Reading CC.MPS field */
     memcpy(&mps, &n->cntrl_reg[NVME_CC], WORD);

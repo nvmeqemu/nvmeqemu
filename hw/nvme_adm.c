@@ -710,6 +710,7 @@ static uint32_t adm_cmd_get_log_page(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         return adm_cmd_fw_log_info(n, cmd, cqe);
         break;
     default:
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_LOG_PAGE;
         break;
     }

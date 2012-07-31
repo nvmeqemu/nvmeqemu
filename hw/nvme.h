@@ -401,8 +401,10 @@ typedef struct AONIdCtrlVs {
     uint8_t nlbaf;              /* [3104] */
     uint8_t mc;                 /* [3105] */
     uint8_t dpc;                /* [3106] */
-    uint8_t resv3107[93];       /* [3107-3199] */
-    NVMELBAFormat lbaf[16];     /* [3200-3263] LBA Format 0-15 Support */
+    uint8_t resv3107;           /* [3107] */
+    NVMELBAFormat lbaf[16];     /* [3108-31] LBA Format 0-15 Support */
+    uint8_t dcard_sn[20];       /* [3172-3191] */
+    uint8_t baseboard_sn[20];   /* [3192-3211] */
 } AONIdCtrlVs;
 
 /* Identify - Namespace. Numbers means bytes in comments. */

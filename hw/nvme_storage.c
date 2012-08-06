@@ -865,7 +865,7 @@ uint8_t nvme_command_set(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
                       uint32_t *   : Namespace id
                       DiskInfo *   : NVME disk to create storage for
 *********************************************************************/
-static int nvme_create_meta_disk(uint32_t instance, uint32_t nsid,
+int nvme_create_meta_disk(uint32_t instance, uint32_t nsid,
     DiskInfo *disk)
 {
     uint32_t ms;
@@ -1010,7 +1010,7 @@ int nvme_create_storage_disks(NVMEState *n)
 
     Arguments    :    DiskInfo * : Pointer to NVME disk
 *********************************************************************/
-static int nvme_close_meta_disk(DiskInfo *disk)
+int nvme_close_meta_disk(DiskInfo *disk)
 {
     if (disk->meta_mapping_addr != NULL) {
         if (munmap(disk->meta_mapping_addr, disk->meta_mapping_size) < 0) {

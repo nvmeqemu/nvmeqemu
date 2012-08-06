@@ -1747,10 +1747,25 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         }
         disk->ns_util = qemu_realloc(disk->ns_util,
             (ns_bytes / block_size + 7) / 8);
+
+        nvme_close_meta_disk(disk);
+        munmap(disk->mapping_addr, disk->mapping_size);
+
         if (posix_fallocate(disk->fd, 0, size) != 0) {
             LOG_ERR("Error while modifying size of namespace");
             return FAIL;
         }
+        disk->mapping_addr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+            MAP_SHARED, disk->fd, 0);
+        if (disk->mapping_addr == NULL) {
+            LOG_ERR("Error while opening namespace: %d", disk->nsid);
+            return FAIL;
+        }
+        disk->mapping_size = size;
+        if (nvme_create_meta_disk(n->instance, nsid, disk) != SUCCESS) {
+            return FAIL;
+        }
+
         if (ns_bytes > current_bytes) {
             n->available_space -= (ns_bytes - current_bytes);
         } else if (ns_bytes < current_bytes) {

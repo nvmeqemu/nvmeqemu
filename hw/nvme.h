@@ -1339,11 +1339,13 @@ int nvme_open_storage_disks(NVMEState *n);
 int nvme_open_storage_disk(DiskInfo *disk);
 int nvme_close_storage_disks(NVMEState *n);
 int nvme_close_storage_disk(DiskInfo *disk);
+int nvme_close_meta_disk(DiskInfo *disk);
 int nvme_create_storage_disks(NVMEState *n);
 int nvme_del_storage_disks(NVMEState *n);
 int nvme_del_storage_disk(DiskInfo *disk);
 int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
     NVMEState *n);
+int nvme_create_meta_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk);
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len);
 void nvme_dma_mem_write(target_phys_addr_t addr, uint8_t *buf, int len);

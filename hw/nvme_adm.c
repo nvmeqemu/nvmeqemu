@@ -1577,7 +1577,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
             sf->sc = NVME_SC_INVALID_FIELD;
             return FAIL;
         }
-        nvme_dma_mem_write(cmd->prp2,
+        nvme_dma_mem_read(cmd->prp2,
             (uint8_t *) ((uint8_t *) ((uint8_t *)&ns) + len),
                 (sizeof(ns) - len));
     }
@@ -1716,7 +1716,7 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
             sf->sc = NVME_SC_INVALID_FIELD;
             return FAIL;
         }
-        nvme_dma_mem_write(cmd->prp2,
+        nvme_dma_mem_read(cmd->prp2,
             (uint8_t *) ((uint8_t *) ((uint8_t *)&ns) + len),
                 (sizeof(ns) - len));
     }

@@ -495,17 +495,19 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     time_t current_seconds;
     NVMESmartLog smart_log;
 
+    LOG_DBG("%s(): called", __func__);
+
     if (((cmd->cdw10 >> 16) & 0xfff) * 4 < sizeof(smart_log)) {
-        LOG_NORM("%s: not enough memory, needs %ld, has %d bytes.", __func__,
+        LOG_ERR("%s: not enough memory, needs %ld, has %d bytes.", __func__,
                 sizeof(smart_log), ((cmd->cdw10 >> 16) & 0xfff) * 4);
         NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
         sf->sc = NVME_SC_INVALID_FIELD;
-        return 0;
+        return FAIL;
     }
 
     memset(&smart_log, 0x0, sizeof(smart_log));
     LOG_NORM("%s called", __func__);
-    if (cmd->nsid == 0xffffffff) {
+    if (cmd->nsid == 0xffffffff || !(n->idtfy_ctrl->lpa & 0x1)) {
         /* return info for entire device */
         int i;
         uint64_t dur[2] = {0, 0};
@@ -560,7 +562,8 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         smart_log.host_write_commands[1] = hwc[1];
         smart_log.available_spare = 100 - (uint32_t)((((double)total_use) /
             total_size) * 100);
-    } else if (cmd->nsid > 0 && cmd->nsid <= n->num_namespaces) {
+    } else if (cmd->nsid > 0 && cmd->nsid <= n->num_namespaces &&
+        (n->idtfy_ctrl->lpa & 0x1)) {
         LOG_NORM("getting smart log info for instance:%d nsid:%d",
             n->instance, cmd->nsid);
         DiskInfo *disk = &n->disk[cmd->nsid - 1];
@@ -577,7 +580,7 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     } else {
         NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
         sf->sc = NVME_SC_INVALID_NAMESPACE;
-        return 0;
+        return FAIL;
     }
 
     /* just make up a temperature. 0x143 Kelvin is 50 degrees C. */

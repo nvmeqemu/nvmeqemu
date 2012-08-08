@@ -51,7 +51,7 @@ static uint8_t do_rw_prp(NVMEState *n, uint64_t mem_addr, uint64_t *data_size_p,
     }
 
     /* Data Len to be written per page basis */
-    data_len = PAGE_SIZE - (mem_addr % PAGE_SIZE);
+    data_len = PAGE_SIZE - (mem_addr & (PAGE_MASK));
     if (data_len > *data_size_p) {
         data_len = *data_size_p;
     }
@@ -81,7 +81,7 @@ static uint8_t do_rw_prp(NVMEState *n, uint64_t mem_addr, uint64_t *data_size_p,
 static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,
     uint64_t *data_size_p, uint64_t *file_offset_p, uint8_t *mapping_addr)
 {
-    uint64_t prp_list[512], prp_entries;
+    uint64_t prp_list[512], prp_entries, prp_trans;
     uint16_t i;
     uint8_t res = NVME_SC_SUCCESS;
     NVME_rw *cmd = (NVME_rw *)command;
@@ -89,19 +89,19 @@ static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,
     LOG_DBG("Data Size remaining for read/write:%ld", *data_size_p);
 
     /* Logic to find the number of PRP Entries */
-    prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) / PAGE_SIZE);
-    nvme_dma_mem_read(cmd->prp2, (uint8_t *)prp_list,
-        min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
+    prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) >> PAGE_SHIFT);
+    prp_trans = min(sizeof(prp_list), prp_entries * sizeof(uint64_t));
+    nvme_dma_mem_read(cmd->prp2, (uint8_t *)prp_list, prp_trans);
 
     i = 0;
     /* Read/Write on PRPList */
     while (*data_size_p != 0) {
         if (i == 511 && *data_size_p > PAGE_SIZE) {
             /* Calculate the actual number of remaining entries */
-            prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) /
-                PAGE_SIZE);
-            nvme_dma_mem_read(prp_list[511], (uint8_t *)prp_list,
-                min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
+            prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) >>
+                PAGE_SHIFT);
+            prp_trans = min(sizeof(prp_list), prp_entries * sizeof(uint64_t));
+            nvme_dma_mem_read(prp_list[i], (uint8_t *)prp_list, prp_trans);
             i = 0;
         }
 
@@ -127,11 +127,11 @@ static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,
 *********************************************************************/
 static void update_ns_util(DiskInfo *disk, uint64_t slba, uint16_t nlb)
 {
-    uint64_t nr;
+    uint64_t nr = slba;
+    uint64_t elba = slba + nlb;
     unsigned long *addr = (unsigned long *)disk->ns_util;
 
-    /* Update the namespace utilization */
-    for (nr = slba; nr <= nlb + slba; ++nr) {
+    for (nr = slba; nr <= elba; ++nr) {
         if (test_and_set_bit(nr, addr) == 0) {
             ++disk->idtfy_ns.nuse;
         }
@@ -140,25 +140,17 @@ static void update_ns_util(DiskInfo *disk, uint64_t slba, uint16_t nlb)
 
 static uint8_t check_read_blocks(DiskInfo *disk, uint64_t slba, uint64_t nlb)
 {
-    uint64_t nr;
-    int partial = 0;
-    int empty = 1;
+    uint64_t nr, total = nlb, end = slba + nlb;
     unsigned long *addr = (unsigned long *)disk->ns_util;
 
-    if (!(disk->idtfy_ns.nsfeat & NVME_NSFEAT_READ_ERR)) {
-        return 0;
-    }
-
-    for (nr = slba; nr <= nlb + slba; ++nr) {
+    for (nr = slba; nr < end; ++nr) {
         if (test_bit(nr, addr)) {
-            empty = 0;
-        } else {
-            partial = 1;
+            --nlb;
         }
     }
 
-    return empty ? NVME_AON_READ_UNALLOCATED_BLOCK :
-        partial ? NVME_AON_READ_PARTIAL_UNALLOCATED_BLOCK : 0;
+    return nlb == 0 ? 0 : nlb == total ? NVME_AON_READ_UNALLOCATED_BLOCK :
+        NVME_AON_READ_PARTIAL_UNALLOCATED_BLOCK;
 }
 
 /*********************************************************************
@@ -178,14 +170,9 @@ static void nvme_update_stats(NVMEState *n, DiskInfo *disk, uint8_t opcode,
 {
     uint64_t tmp;
     if (opcode == NVME_CMD_WRITE) {
-        uint64_t old_use = disk->idtfy_ns.nuse;
-
         update_ns_util(disk, slba, nlb);
-
-        /* check if there needs to be an event issued */
-        if (old_use != disk->idtfy_ns.nuse && !disk->thresh_warn_issued &&
-                (100 - (uint32_t)((((double)disk->idtfy_ns.nuse) /
-                    disk->idtfy_ns.nsze) * 100) < NVME_SPARE_THRESH)) {
+        if (!disk->thresh_warn_issued && disk->idtfy_ns.nuse >
+                disk->nuse_thresh) {
             LOG_NORM("Device:%d nsid:%d, setting threshold warning",
                 n->instance, disk->nsid);
             disk->thresh_warn_issued = 1;
@@ -296,10 +283,10 @@ static uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         data_size += (disk->idtfy_ns.lbaf[lba_idx].ms * (e->nlb + 1));
     }
 
-    if (n->idtfy_ctrl->mdts && data_size > PAGE_SIZE *
-                (1 << (n->idtfy_ctrl->mdts))) {
+    if (n->idtfy_ctrl.mdts && data_size > PAGE_SIZE *
+                (1 << (n->idtfy_ctrl.mdts))) {
         LOG_ERR("%s(): data size:%ld exceeds max:%ld", __func__,
-            data_size, ((uint64_t)PAGE_SIZE) * (1 << (n->idtfy_ctrl->mdts)));
+            data_size, ((uint64_t)PAGE_SIZE) * (1 << (n->idtfy_ctrl.mdts)));
         sf->sc = NVME_SC_INVALID_FIELD;
         sf->dnr = 1;
         return FAIL;
@@ -307,7 +294,7 @@ static uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
 
     /* Namespace not ready */
     if (mapping_addr == NULL) {
-        LOG_NORM("%s():Namespace not ready", __func__);
+        LOG_NORM("%s():Namespace:%d not ready", __func__, e->nsid);
         sf->sc = NVME_SC_NS_NOT_READY;
         return FAIL;
     }
@@ -393,8 +380,9 @@ static uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         }
     }
 
-    if (e->opcode == NVME_CMD_READ) {
-        uint8_t sc = check_read_blocks(disk, e->slba, e->nlb);
+    if (e->opcode == NVME_CMD_READ && disk->idtfy_ns.nsfeat &
+            NVME_NSFEAT_READ_ERR) {
+        uint8_t sc = check_read_blocks(disk, e->slba, e->nlb + 1);
         if (sc != 0) {
             sf->sct = NVME_SCT_CMD_SPEC_ERR;
             sf->sc = sc;
@@ -402,6 +390,7 @@ static uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
             return FAIL;
         }
     }
+
     /* Writing/Reading PRP1 */
     res = do_rw_prp(n, e->prp1, &data_size, &file_offset, mapping_addr,
         e->opcode);
@@ -530,7 +519,6 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     if (rw->mdstag) {
         mstag = n->stags[rw->mdstag - 1];
     }
-
     if (nstag->nsid == 0 || nstag->nsid > n->num_namespaces) {
         LOG_ERR("%s(): bad nsid referenced nstag", __func__);
         sf->sc = NVME_SC_INVALID_NAMESPACE;
@@ -570,10 +558,10 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         sf->sc = NVME_SC_NS_NOT_READY;
         return FAIL;
     }
-    if (n->idtfy_ctrl->mdts && data_size > PAGE_SIZE *
-                (1 << (n->idtfy_ctrl->mdts))) {
+    if (n->idtfy_ctrl.mdts && data_size > PAGE_SIZE *
+                (1 << (n->idtfy_ctrl.mdts))) {
         LOG_ERR("%s(): data size:%ld exceeds max:%ld", __func__,
-            data_size, ((uint64_t)PAGE_SIZE) * (1 << (n->idtfy_ctrl->mdts)));
+            data_size, ((uint64_t)PAGE_SIZE) * (1 << (n->idtfy_ctrl.mdts)));
         sf->sc = NVME_SC_INVALID_FIELD;
         sf->dnr = 1;
         return FAIL;
@@ -705,7 +693,6 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
             }
         }
     }
-
     return NVME_SC_SUCCESS;
 }
 
@@ -835,14 +822,14 @@ uint8_t nvme_command_set(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
 
     /* As of NVMe spec rev 1.0b "All NVM cmds use the CMD.DW1 (NSID) field".
      * Thus all NVM cmd set cmds must check for illegal namespaces up front */
-    if (sqe->nsid == 0 || (sqe->nsid > n->idtfy_ctrl->nn) ||
+    if (sqe->nsid == 0 || (sqe->nsid > n->idtfy_ctrl.nn) ||
             n->disk[sqe->nsid - 1] == NULL) {
         LOG_NORM("%s(): Invalid nsid:%u", __func__, sqe->nsid);
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }
 
-    if (sqe->opcode == NVME_CMD_READ || (sqe->opcode == NVME_CMD_WRITE)){
+    if (sqe->opcode == NVME_CMD_READ || (sqe->opcode == NVME_CMD_WRITE)) {
         return nvme_io_command(n, sqe, cqe, sq);
     } else if (sqe->opcode == NVME_CMD_DSM) {
         return nvme_dsm_command(n, sqe, cqe);
@@ -961,6 +948,8 @@ int nvme_create_storage_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk,
         return FAIL;
     }
     disk->thresh_warn_issued = 0;
+    disk->nuse_thresh = ((double)disk->idtfy_ns.ncap) *
+        (1 - ((double)NVME_SPARE_THRESH) / 100.0);
 
     memset(&disk->range_type, 0x0, sizeof(disk->range_type));
     disk->range_type.nlb = disk->idtfy_ns.nsze;

@@ -24,11 +24,10 @@
 #include "nvme.h"
 #include "nvme_debug.h"
 
-
 /* queue is full if tail is just behind head. */
-uint8_t is_cq_full(NVMEState *n, uint16_t qid)
+uint8_t is_cq_full(NVMEIOCQueue *cq)
 {
-    return (((n->cq[qid].tail + 1) % n->cq[qid].size) == n->cq[qid].head);
+    return (cq->tail + 1) % cq->size == cq->head;
 }
 
 static void incr_sq_head(NVMEIOSQueue *q)
@@ -36,7 +35,7 @@ static void incr_sq_head(NVMEIOSQueue *q)
     q->head = (q->head + 1) % q->size;
 }
 
-void incr_cq_tail(NVMEIOCQueue *q)
+static void incr_cq_tail(NVMEIOCQueue *q)
 {
     q->tail += 1;
     if (q->tail >= q->size) {
@@ -82,86 +81,83 @@ static uint64_t find_discontig_queue_entry(uint32_t pg_size, uint16_t queue_ptr,
     return dma_addr;
 }
 
-void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMECQE* cqe)
+void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMEIOSQueue *sq, NVMECQE* cqe)
 {
     target_phys_addr_t addr;
+    uint32_t tail;
+    NVMEStatusField *sf = (NVMEStatusField *) &cqe->status;
+
+    pthread_mutex_lock(&cq->queue_lock);
+    while (is_cq_full(cq)) {
+        pthread_mutex_unlock(&cq->queue_lock);
+        pthread_mutex_unlock(&sq->queue_lock);
+
+        isr_notify(n, cq);
+        wait_for_work(sq);
+
+        pthread_mutex_lock(&sq->queue_lock);
+        pthread_mutex_lock(&cq->queue_lock);
+    }
+    tail = cq->tail;
+    sf->p = cq->phase_tag;
+    incr_cq_tail(cq);
+    pthread_mutex_unlock(&cq->queue_lock);
+
     if (cq->phys_contig) {
-        addr = cq->dma_addr + cq->tail * sizeof(*cqe);
+        addr = cq->dma_addr + tail * sizeof(*cqe);
     } else {
-        addr = find_discontig_queue_entry(n->page_size, cq->tail,
+        addr = find_discontig_queue_entry(n->page_size, tail,
             sizeof(*cqe), cq->dma_addr);
     }
     nvme_dma_mem_write(addr, (uint8_t *)cqe, sizeof(*cqe));
-
-    incr_cq_tail(cq);
-    if (cq->irq_enabled) {
-        msix_notify(&(n->dev), cq->vector);
-    }
 }
 
-int process_sq(NVMEState *n, uint16_t sq_id)
+int process_sq(NVMEIOSQueue *sq, NVMEIOCQueue *cq, NVMEState *n)
 {
     target_phys_addr_t addr;
-    uint16_t cq_id;
     NVMECmd sqe;
     NVMECQE cqe;
-    NVMEStatusField *sf = (NVMEStatusField *) &cqe.status;
 
-    if (adm_check_sqid(n, sq_id)) {
-        LOG_ERR("Required Submission/Completion Queue does not exist");
-        n->sq[sq_id].head = n->sq[sq_id].tail = 0;
+    if (sq->head == sq->tail) {
         return -1;
     }
-    cq_id = n->sq[sq_id].cq_id;
-    if (is_cq_full(n, cq_id)) {
-        LOG_DBG("CQ %d is full", cq_id);
-        return -1;
-    }
-    memset(&cqe, 0, sizeof(cqe));
 
     LOG_DBG("%s(): called", __func__);
 
     /* Process SQE */
-    if (sq_id == ASQ_ID || n->sq[sq_id].phys_contig) {
-        addr = n->sq[sq_id].dma_addr + n->sq[sq_id].head * sizeof(sqe);
+    if (sq->phys_contig) {
+        addr = sq->dma_addr + sq->head * sizeof(sqe);
     } else {
-        /* PRP implementation */
-        addr = find_discontig_queue_entry(n->page_size, n->sq[sq_id].head,
-            sizeof(sqe), n->sq[sq_id].dma_addr);
+        addr = find_discontig_queue_entry(n->page_size, sq->head,
+            sizeof(sqe), sq->dma_addr);
     }
     nvme_dma_mem_read(addr, (uint8_t *)&sqe, sizeof(sqe));
-
-    incr_sq_head(&n->sq[sq_id]);
-
-    if (sq_id == ASQ_ID) {
-        nvme_admin_command(n, &sqe, &cqe);
-        if (sqe.opcode == NVME_ADM_CMD_ASYNC_EV_REQ &&
-            sf->sc == NVME_SC_SUCCESS) {
-            /* completion entry is done separately */
+    memset(&cqe, 0, sizeof(cqe));
+    incr_sq_head(sq);
+    if (sq->id == ASQ_ID) {
+        if (nvme_admin_command(n, &sqe, &cqe) == NVME_NO_COMPLETE) {
             return 0;
         }
-    } else if (!n->cq[cq_id].pdid) {
+    } else if (!cq->pdid) {
         /* TODO add support for IO commands with different sizes of Q elems */
-        if (nvme_command_set(n, &sqe, &cqe, &n->sq[sq_id])
-            == NVME_NO_COMPLETE) {
+        if (nvme_command_set(n, &sqe, &cqe, sq) == NVME_NO_COMPLETE) {
             return 0;
         }
     } else if (n->use_aon) {
         /* aon user read/write command */
-        nvme_aon_io_command(n, &sqe, &cqe, n->cq[cq_id].pdid);
+        if (nvme_aon_io_command(n, &sqe, &cqe, cq->pdid) == NVME_NO_COMPLETE) {
+            return 0;
+        }
     } else {
         cqe.status.sc = NVME_SC_INVALID_OPCODE;
     }
 
     /* Filling up the CQ entry */
-    cqe.sq_id = sq_id;
-    cqe.sq_head = n->sq[sq_id].head;
+    cqe.sq_id = sq->id;
+    cqe.sq_head = sq->head;
     cqe.command_id = sqe.cid;
 
-    sf->p = n->cq[cq_id].phase_tag;
-    sf->m = 0;
-
-    post_cq_entry(n, &n->cq[cq_id], &cqe);
+    post_cq_entry(n, cq, sq, &cqe);
 
     return 0;
 }

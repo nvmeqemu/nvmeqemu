@@ -22,13 +22,15 @@
 #define NVME_CONFIG_FILE "NVME_device_NVME_config"
 #define PCI_CONFIG_FILE "NVME_device_PCI_config"
 /* Page size supported by the hardware */
-#define PAGE_SIZE 4096
+#define PAGE_SHIFT 12
+#define PAGE_SIZE (1 << PAGE_SHIFT)
+#define PAGE_MASK (PAGE_SIZE - 1)
 /* Should be in pci class someday. */
 #define PCI_CLASS_STORAGE_EXPRESS 0x010802
 /* Device ID for NVME Device */
 #define NVME_DEV_ID 0x0111
 #define NVME_FD_DEV_ID 0x0112
-/* Maximum number of charachters on a line in any config file */
+/* Maximum number of characters on a line in any config file */
 #define MAX_CHAR_PER_LINE 250
 /* Width of SQ/CQ base address in bytes*/
 #define QUEUE_BASE_ADDRESS_WIDTH 8
@@ -36,8 +38,6 @@
 #define PCI_ROM_ADDRESS_LEN 0x04
 #define PCI_BIST_LEN 0x01
 #define PCI_BASE_ADDRESS_2_LEN 0x04
-/* Defines the number of entries to process per execution */
-#define ENTRIES_TO_PROCESS 4
 /* bytes,word and dword in bytes */
 #define BYTE 1
 #define WORD 2
@@ -73,6 +73,7 @@
 
 /* Maximum Q's allocated for the controller including Admin Q */
 #define NVME_MAX_QS_ALLOCATED 64
+#define NVME_MSIX_NVECTORS 32
 
 /* The Q ID starts from 0 for Admin Q and ends at
  * NVME_MAX_QS_ALLOCATED minus 1 for IO Q's */
@@ -80,9 +81,6 @@
 
 /* Size of PRP entry in bytes */
 #define PRP_ENTRY_SIZE 8
-
-/* Queue Limit.*/
-#define NVME_MSIX_NVECTORS 32
 
 #define NVME_BUF_SIZE 4096
 #define NVME_BLOCK_SIZE(x) (1 << x)
@@ -239,6 +237,17 @@ typedef struct CommandEntry {
     uint16_t cid;
 } CommandEntry;
 
+typedef struct NvmeBSem {
+    pthread_cond_t  cv;
+    pthread_mutex_t mutex;
+    int flag;
+} bsem;
+
+void bsem_init(bsem *s);
+void bsem_destroy(bsem *s);
+void bsem_get(bsem *s);
+void bsem_put(bsem *s);
+
 typedef struct NVMEIOSQueue {
     uint16_t id;
     uint16_t cq_id;
@@ -247,14 +256,19 @@ typedef struct NVMEIOSQueue {
     uint16_t prio;
     uint16_t phys_contig;
     uint32_t size;
+    uint32_t is_active;
     uint64_t dma_addr; /* DMA Address */
-    /*FIXME: Add support for PRP List. */
+    uint64_t completed;
+    struct NVMEState *n;
+    bsem event_lock;
+    pthread_mutex_t queue_lock;
+    pthread_t process_thread;
+    QTAILQ_ENTRY(NVMEIOSQueue) entry;
     QTAILQ_HEAD(cmd_list, CommandEntry) cmd_list;
 } NVMEIOSQueue;
 
 typedef struct NVMEIOCQueue {
     uint16_t id;
-    uint16_t usage_cnt; /* how many sq is linked */
     uint32_t head;
     uint32_t tail;
     uint32_t vector;
@@ -264,6 +278,8 @@ typedef struct NVMEIOCQueue {
     uint64_t dma_addr;  /* DMA Address */
     uint8_t  phase_tag; /* check spec for Phase Tag details*/
     uint32_t pdid;      /* for aon */
+    pthread_mutex_t queue_lock;
+    QTAILQ_HEAD(sq_list, NVMEIOSQueue) sq_list;
 } NVMEIOCQueue;
 
 /* Figure 53: Get Features - Feature Identifiers */
@@ -530,6 +546,8 @@ typedef struct DiskInfo {
     NVMEIdentifyNamespace idtfy_ns;
     LBARangeType range_type;
 
+    uint64_t nuse_thresh;
+
     /* Namespace utilization bitmasks (rounded off) */
     uint8_t *ns_util;
     uint8_t thresh_warn_issued;
@@ -580,6 +598,7 @@ typedef struct NVMEAonNStag {
     uint32_t nsid;
 } NVMEAonNStag;
 
+
 /* Refer to Safford Peak Security Management Addendum */
 typedef enum SecurityState {
     A = 'A',
@@ -612,17 +631,20 @@ typedef struct NVMEState {
     uint8_t nvectors;
 
     /* Space for NVME Ctrl Space except doorbells */
-    uint8_t *cntrl_reg;
+    uint8_t cntrl_reg[NVME_CNTRL_SIZE];
     /* Masks for NVME Ctrl Registers */
-    uint8_t *rw_mask; /* RW/RO mask */
-    uint8_t *rwc_mask; /* RW1C mask */
-    uint8_t *rws_mask; /* RW1S mask */
-    uint8_t *used_mask; /* Used/Resv mask */
+    uint8_t rw_mask[NVME_CNTRL_SIZE]; /* RW/RO mask */
+    uint8_t rwc_mask[NVME_CNTRL_SIZE]; /* RW1C mask */
+    uint8_t rws_mask[NVME_CNTRL_SIZE]; /* RW1S mask */
+    uint8_t used_mask[NVME_CNTRL_SIZE]; /* Used/Resv mask */
 
     NVMEFeatures feature;
 
-    NVMEIOCQueue cq[NVME_MAX_QS_ALLOCATED];
-    NVMEIOSQueue sq[NVME_MAX_QS_ALLOCATED];
+    NVMEIOCQueue * cq[NVME_MAX_QS_ALLOCATED];
+    NVMEIOSQueue * sq[NVME_MAX_QS_ALLOCATED];
+
+    NVMEIOSQueue admin_sq;
+    NVMEIOCQueue admin_cq;
 
     DiskInfo **disk;
     uint32_t ns_size;
@@ -647,30 +669,12 @@ typedef struct NVMEState {
     /* Used to store the AQA,ASQ,ACQ between resets */
     struct AQState aqstate;
 
-    /* TODO
-     * These pointers have been defined since
-     * present code uses the older defined strucutres
-     * which has been replaced by pointers.
-     * Once each and every reference is replaced by
-     * offset from cntrl_reg, remove these pointers
-     * becasue bit field structures are not portable
-     * especially when the memory locations of the bit fields
-     * have importance
-     */
-    NVMECtrlCap *ctrlcap;
-    NVMEVersion *ctrlv;
-    NVMECtrlConf *cconf; /* Ctrl configuration */
-    NVMECtrlStatus *cstatus; /* Ctrl status */
-    NVMEAQA *admqattrs; /* Admin queues attributes. */
-
-    QEMUTimer *sq_processing_timer;
-    int64_t sq_processing_timer_target;
     /* Used for PIN based and MSI interrupts */
     uint32_t intr_vect;
     /* Page Size used by the hardware */
     uint32_t page_size;
     /* Pointer to Identify Controller Strucutre */
-    NVMEIdentifyController *idtfy_ctrl;
+    NVMEIdentifyController idtfy_ctrl;
     AONIdCtrlVs *aon_ctrl_vs;
     /* Pointer to Firmware slot info log page */
     NVMEFwSlotInfoLog fw_slot_log;
@@ -1349,9 +1353,8 @@ int nvme_create_meta_disk(uint32_t instance, uint32_t nsid, DiskInfo *disk);
 
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len);
 void nvme_dma_mem_write(target_phys_addr_t addr, uint8_t *buf, int len);
-int  process_sq(NVMEState *n, uint16_t sq_id);
+int  process_sq(NVMEIOSQueue *sq, NVMEIOCQueue *cq, NVMEState *n);
 void async_process_cb(void *);
-void incr_cq_tail(NVMEIOCQueue *q);
 
 uint32_t adm_check_cqid(NVMEState *n, uint16_t cqid);
 uint32_t adm_check_sqid(NVMEState *n, uint16_t sqid);
@@ -1369,7 +1372,13 @@ void nvme_cntrl_write_config(NVMEState *,
 void enqueue_async_event(NVMEState *n, uint8_t event_type, uint8_t event_info,
     uint8_t log_page);
 int random_chance(int chance);
-void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMECQE* cqe);
-uint8_t is_cq_full(NVMEState *n, uint16_t qid);
+void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMEIOSQueue *sq,
+    NVMECQE* cqe);
+uint8_t is_cq_full(NVMEIOCQueue *cq);
+
+void wait_for_work(NVMEIOSQueue *sq);
+void isr_notify(NVMEState *n, NVMEIOCQueue *cq);
+
+void *submission_queue_thread(void *arg);
 
 #endif /* NVME_H_ */

@@ -96,7 +96,8 @@ void wait_for_work(NVMEIOSQueue *sq)
     if (sq->is_active) {
         return;
     }
-    LOG_NORM("submission queue:%d completed:%lu thread exiting", sq->id, sq->completed);
+    LOG_NORM("submission queue:%d completed:%lu thread exiting", sq->id,
+        sq->completed);
     pthread_exit(NULL);
 }
 

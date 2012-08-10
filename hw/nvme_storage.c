@@ -573,7 +573,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     prp_offset = rw->sto * blksize;
     prp_index = prp_offset / stag->smps;
 
-    if (prp_index + prp_entries > stag->nmp) {
+    if (prp_index + prp_entries > stag->nmp + 1) {
         LOG_NORM("%s(): stag offset:%lu for %lu prps beyond prp list:%lu",
             __func__, rw->sto, prp_entries, stag->nmp);
         sf->sc = NVME_AON_CONFLICTING_ATTRIBUTES;
@@ -645,7 +645,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         mprp_offset = rw->mdsto * ms;
         mprp_index = mprp_offset / mstag->smps;
 
-        if (mprp_index + mprp_entries > mstag->nmp) {
+        if (mprp_index + mprp_entries > mstag->nmp + 1) {
             LOG_NORM("%s(): stag offset:%lu for %lu prps beyond prp list:%lu",
                 __func__, rw->sto, prp_entries, stag->nmp);
             sf->sc = NVME_AON_CONFLICTING_ATTRIBUTES;

@@ -466,43 +466,42 @@ static uint32_t adm_cmd_alloc_cq(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
 static uint32_t adm_cmd_fw_log_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
-    NVMEFwSlotInfoLog *firmware_info = &(n->fw_slot_log);
-    uint32_t len;
+    NVMEFwSlotInfoLog *fw_info = &(n->fw_slot_log);
+    uint32_t len, buf_len, trans_len;
 
     LOG_NORM("%s called", __func__);
 
-    if (((cmd->cdw10 >> 16) & 0xfff) * 4 < sizeof(*firmware_info)) {
+    buf_len = ((cmd->cdw10 >> 16) & 0xfff) * 4;
+    trans_len = min(sizeof(*fw_info), buf_len);
+
+    if (buf_len < sizeof(*fw_info)) {
         LOG_NORM("%s: not enough memory, needs %ld, has %d bytes.", __func__,
-                sizeof(*firmware_info), ((cmd->cdw10 >> 16) & 0xfff) * 4);
-        NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
-        sf->sc = NVME_SC_INVALID_FIELD;
-        return 0;
+                sizeof(*fw_info), buf_len);
     }
 
-    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), sizeof(*firmware_info));
-    nvme_dma_mem_write(cmd->prp1, (uint8_t *)firmware_info, len);
-    if (len < sizeof(*firmware_info)) {
-        nvme_dma_mem_write(cmd->prp2,
-            (uint8_t *)((uint8_t *)firmware_info + len),
-            sizeof(*firmware_info) - len);
+    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), trans_len);
+    nvme_dma_mem_write(cmd->prp1, (uint8_t *)fw_info, len);
+    if (len < trans_len) {
+        nvme_dma_mem_write(cmd->prp2, (uint8_t *)((uint8_t *)fw_info + len),
+            trans_len - len);
     }
     return 0;
 }
 
 static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
-    uint32_t len;
+    uint32_t len, buf_len, trans_len;
     time_t current_seconds;
     NVMESmartLog smart_log;
 
     LOG_DBG("%s(): called", __func__);
 
-    if (((cmd->cdw10 >> 16) & 0xfff) * 4 < sizeof(smart_log)) {
+    buf_len = ((cmd->cdw10 >> 16) & 0xfff) * 4;
+    trans_len = min(sizeof(smart_log), buf_len);
+
+    if (buf_len < sizeof(smart_log)) {
         LOG_ERR("%s: not enough memory, needs %ld, has %d bytes.", __func__,
-                sizeof(smart_log), ((cmd->cdw10 >> 16) & 0xfff) * 4);
-        NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
-        sf->sc = NVME_SC_INVALID_FIELD;
-        return FAIL;
+                sizeof(smart_log), buf_len);
     }
 
     memset(&smart_log, 0x0, sizeof(smart_log));
@@ -598,12 +597,11 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         smart_log.critical_warning |= 1 << 1;
     }
 
-    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), sizeof(smart_log));
+    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), trans_len);
     nvme_dma_mem_write(cmd->prp1, (uint8_t *)&smart_log, len);
-    if (len < sizeof(smart_log)) {
-        nvme_dma_mem_write(cmd->prp2,
-            (uint8_t *)((uint8_t *)&smart_log + len),
-            sizeof(smart_log) - len);
+    if (len < trans_len) {
+        nvme_dma_mem_write(cmd->prp2, (uint8_t *)((uint8_t *)&smart_log + len),
+            trans_len - len);
     }
     return 0;
 }

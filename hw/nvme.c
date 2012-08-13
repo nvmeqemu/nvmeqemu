@@ -189,6 +189,10 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
                 bsem_put(&sq->event_lock);
             }
         }
+        if (cq->tail != cq->head) {
+            /* more completion entries, submit interrupt */
+            isr_notify(nvme_dev, cq);
+        }
         pthread_mutex_unlock(&cq->queue_lock);
     } else {
         /* SQ */

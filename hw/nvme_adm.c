@@ -1467,10 +1467,8 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     NVMEIdentifyNamespace ns;
-    uint32_t len;
-    uint32_t nsid;
+    uint32_t len, nsid, ms, block_shift;
     uint64_t ns_bytes;
-    uint32_t block_shift;
 
     sf->sc = NVME_SC_SUCCESS;
 
@@ -1516,6 +1514,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     memcpy(ns.lbaf, n->aon_ctrl_vs->lbaf, sizeof(n->aon_ctrl_vs->lbaf));
     block_shift = ns.lbaf[ns.flbas & 0xf].lbads;
     ns_bytes = ns.nsze * (1 << block_shift);
+    ms = ns.lbaf[ns.flbas].ms;
     if (ns_bytes > n->available_space ||
             ns_bytes < (1 << n->aon_ctrl_vs->mns)) {
         LOG_NORM("%s(): bad ns size:%lu available space:%lu minimum size:%u",
@@ -1538,6 +1537,13 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
             ns.dps, n->aon_ctrl_vs->mc, n->aon_ctrl_vs->dpc);
         sf->sc = NVME_AON_INVALID_END_TO_END_DATA_PROTECTION_CONFIGURATION;
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+    if (ms && (((ns.flbas & 0x10) && !(ns.mc & 0x1)) ||
+             (!(ns.flbas & 0x10) && !(ns.mc & 0x2)))) {
+        LOG_NORM("%s(): invalid meta-data location settings mc:%x flbas:%x",
+		__func__, ns.mc, ns.flbas);
+        sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
 

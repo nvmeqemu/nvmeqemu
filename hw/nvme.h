@@ -1128,5 +1128,6 @@ void enqueue_async_event(NVMEState *n, uint8_t event_type, uint8_t event_info,
 int random_chance(int chance);
 void post_cq_entry(NVMEState *n, NVMEIOCQueue *cq, NVMECQE* cqe);
 uint8_t is_cq_full(NVMEState *n, uint16_t qid);
+void isr_notify(NVMEState *n, NVMEIOCQueue *cq);
 
 #endif /* NVME_H_ */

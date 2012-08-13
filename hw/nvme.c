@@ -46,6 +46,7 @@ static void sq_processing_timer_cb(void *);
 static int nvme_irqcq_empty(NVMEState *, uint32_t);
 static void msix_clr_pending(PCIDevice *, uint32_t);
 
+
 void enqueue_async_event(NVMEState *n, uint8_t event_type, uint8_t event_info,
     uint8_t log_page)
 {
@@ -59,6 +60,17 @@ void enqueue_async_event(NVMEState *n, uint8_t event_type, uint8_t event_info,
 
     qemu_mod_timer(n->async_event_timer,
             qemu_get_clock_ns(vm_clock) + 20000);
+}
+
+void isr_notify(NVMEState *n, NVMEIOCQueue *cq)
+{
+    if (cq->irq_enabled) {
+        if (msix_enabled(&(n->dev))) {
+            msix_notify(&(n->dev), cq->vector);
+        } else {
+            qemu_irq_pulse(n->dev.irq[0]);
+        }
+    }
 }
 
 /*********************************************************************
@@ -116,6 +128,11 @@ static void process_doorbell(NVMEState *nvme_dev, target_phys_addr_t addr,
             LOG_DBG("Reset P bit for vec:%d", nvme_dev->cq[queue_id].vector);
             msix_clr_pending(&nvme_dev->dev, nvme_dev->cq[queue_id].vector);
 
+        }
+
+        if (nvme_dev->cq[queue_id].tail != nvme_dev->cq[queue_id].head) {
+            /* more completion entries, submit interrupt */
+            isr_notify(nvme_dev, &nvme_dev->cq[queue_id]);
         }
     } else {
         /* SQ */

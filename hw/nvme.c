@@ -1046,6 +1046,7 @@ static void read_identify_cns(NVMEState *n)
     snprintf((char *)n->idtfy_ctrl.sn, sizeof(n->idtfy_ctrl.sn),
         "NVMeQx10%02x", n->instance);
 
+    n->idtfy_ctrl.rab = 2;
     n->idtfy_ctrl.cqes = 4 << 4 | 4;
     n->idtfy_ctrl.sqes = 6 << 4 | 6;
     n->idtfy_ctrl.oacs = 0x7;

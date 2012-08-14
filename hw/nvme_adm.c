@@ -940,11 +940,18 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         break;
 
     case NVME_FEATURE_INTERRUPT_VECTOR_CONF:
-        if (sqe->opcode == NVME_ADM_CMD_SET_FEATURES) {
-            n->feature.interrupt_vector_configuration = sqe->cdw11;
-        } else {
-            cqe->cmd_specific =
-                n->feature.interrupt_vector_configuration;
+        {
+            uint16_t iv = sqe->cdw11 & 0xffff;
+            if (iv >= NVME_MSIX_NVECTORS) {
+                sf->sc = NVME_SC_INVALID_FIELD;
+                return FAIL;
+            }
+            if (sqe->opcode == NVME_ADM_CMD_SET_FEATURES) {
+                n->feature.interrupt_vector_configuration[iv] = sqe->cdw11;
+            } else {
+                cqe->cmd_specific =
+                    n->feature.interrupt_vector_configuration[iv];
+            }
         }
         break;
 
@@ -1542,7 +1549,7 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     if (ms && (((ns.flbas & 0x10) && !(ns.mc & 0x1)) ||
              (!(ns.flbas & 0x10) && !(ns.mc & 0x2)))) {
         LOG_NORM("%s(): invalid meta-data location settings mc:%x flbas:%x",
-		__func__, ns.mc, ns.flbas);
+            __func__, ns.mc, ns.flbas);
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }

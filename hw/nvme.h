@@ -309,7 +309,7 @@ typedef struct NVMEFeatures {
     uint32_t volatile_write_cache;
     uint32_t number_of_queues;
     uint32_t interrupt_coalescing;
-    uint32_t interrupt_vector_configuration;
+    uint32_t interrupt_vector_configuration[NVME_MSIX_NVECTORS];
     uint32_t write_atomicity;
     uint32_t asynchronous_event_configuration;
     uint32_t software_progress_marker;

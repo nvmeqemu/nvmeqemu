@@ -1134,10 +1134,15 @@ static int pci_nvme_init(PCIDevice *pci_dev)
             n->num_user_namespaces, n->num_namespaces);
         return -1;
     }
-    if (n->num_user_namespaces && ((n->num_namespaces - n->num_user_namespaces)
+    if (n->total_size > NVME_MAX_USER_SIZE) {
+    	LOG_ERR("total size:%d exceeds max:%d, setting to max",
+		n->total_size, NVME_MAX_USER_SIZE);
+	n->total_size = NVME_MAX_USER_SIZE;
+    }
+    if (((n->num_namespaces - n->num_user_namespaces)
             * n->ns_size) > n->total_size) {
         LOG_NORM("Storage space over-allocated, namespaces:%d"
-                 "reserved namespaces:%d namespace size:%d total size:%d\n",
+                 " reserved namespaces:%d namespace size:%d total size:%d\n",
                  n->num_namespaces, n->num_user_namespaces, n->ns_size,
                  n->total_size);
         return -1;

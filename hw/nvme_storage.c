@@ -593,7 +593,15 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     mapping_addr = disk->mapping_addr + file_offset;
 
     prp_entries = (uint64_t) ((data_size + stag->smps - 1) / stag->smps);
-    prp_offset = rw->sto * blksize;
+    prp_offset = rw->sto;
+    if (prp_offset & 0x3) {
+        LOG_ERR("%s(): stag offset not aligned:%lx", __func__,
+            prp_offset);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        sf->dnr = 1;
+        return FAIL;
+    }
+
     prp_index = prp_offset / stag->smps;
 
     if (prp_index + prp_entries > stag->nmp + 1) {

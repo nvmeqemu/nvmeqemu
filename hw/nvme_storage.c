@@ -857,6 +857,7 @@ uint8_t nvme_command_set(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     if (sqe->nsid == 0 || (sqe->nsid > n->idtfy_ctrl.nn) ||
             n->disk[sqe->nsid - 1] == NULL) {
         LOG_NORM("%s(): Invalid nsid:%u", __func__, sqe->nsid);
+	sf->dnr = 1;
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }
@@ -869,6 +870,7 @@ uint8_t nvme_command_set(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         return NVME_SC_SUCCESS;
     } else {
         LOG_NORM("%s():Wrong IO opcode:\t\t0x%02x", __func__, sqe->opcode);
+	sf->dnr = 1;
         sf->sc = NVME_SC_INVALID_OPCODE;
         return FAIL;
     }

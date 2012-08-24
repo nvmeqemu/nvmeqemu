@@ -90,7 +90,5 @@ git clone git@github.com:nvmeqemu/nvmeqemu.git
 
             Full list of -device nvme options:
             namespaces=<number_of_namespaces>  : the maximum number of namespaces the device can have.
-            unamespaces=<number_of_namespaces> : number of namespaces to reserve for the user to create. Must be <= namespaces.
             size=<size_in_MB>                  : size each automatically created namespace will be.
-            total_size=<size_in_MB>            : total size of the nvme device, with additional capacity available to create namespaces with.
 

@@ -972,8 +972,10 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         }
         break;
 
-    case NVME_FEATURE_SOFTWARE_PROGRESS_MARKER: /* Set Features only*/
-        if (sqe->opcode == NVME_ADM_CMD_GET_FEATURES) {
+    case NVME_FEATURE_SOFTWARE_PROGRESS_MARKER:
+        if (sqe->opcode == NVME_ADM_CMD_SET_FEATURES) {
+            n->feature.software_progress_marker = sqe->cdw11 & 0xff;
+        } else {
             cqe->cmd_specific = n->feature.software_progress_marker;
         }
         break;

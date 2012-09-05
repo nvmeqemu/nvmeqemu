@@ -1263,6 +1263,9 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     /* Defaulting the async notification to all temperature and threshold */
     n->feature.asynchronous_event_configuration = 0x3;
 
+    /* Default SW Progress marker to bogus value */
+    n->feature.software_progress_marker = 0x55;
+
     for (ret = 0; ret < n->nvectors; ret++) {
         msix_vector_use(&n->dev, ret);
     }

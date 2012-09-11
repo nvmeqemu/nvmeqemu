@@ -1851,7 +1851,7 @@ static uint32_t nvme_ata_security_send(NVMEState *n, NVMECmd *cmd,
             }
             return FAIL;
         }
-        memcpy(&payload[2], password, sizeof(password));
+        memcpy(password, &payload[2], sizeof(password));
         if (memcmp(password, n->password, sizeof(password) != 0)) {
             LOG_NORM("%s(): password mismatch", __func__);
             sf->sc = NVME_SC_CMD_SEQ_ERROR;

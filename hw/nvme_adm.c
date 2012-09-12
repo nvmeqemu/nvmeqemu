@@ -1891,14 +1891,14 @@ static uint32_t aon_cmd_sec_send(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         case 0x0000:
             return nvme_ata_security_send(n, cmd, cqe, tl);
         default:
-            LOG_NORM("%s(): secp:%d bad security protocol specific:%d",
+            LOG_NORM("%s(): secp:%x bad security protocol specific:%x",
                 __func__, secp, spsp);
             sf->sc = NVME_SC_INVALID_FIELD;
             return FAIL;
         }
         break;
     default:
-        LOG_NORM("%s(): bad security protocol secp:%d", __func__, secp);
+        LOG_NORM("%s(): bad security protocol secp:%x", __func__, secp);
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
@@ -1942,6 +1942,52 @@ static uint32_t nvme_supported_security_protocols(NVMEState *n, NVMECmd *cmd,
     return 0;
 }
 
+static uint32_t nvme_security_state(NVMEState *n, NVMECmd *cmd,
+    NVMECQE *cqe, uint16_t tl)
+{
+    int len;
+    uint16_t status;
+    uint64_t prp1 = cmd->prp1;
+    uint64_t prp2 = cmd->prp2;
+    NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
+    
+    if (tl < 4096) {
+        LOG_NORM("%s(): bad transfer len:%d need:%d", __func__, tl,
+            4096);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        return FAIL;
+    }
+
+    switch (n->s) {
+    case C:
+    case E1:
+    case H:
+        status = (1 << Security_Enabled);
+	break;
+    case D:
+        status = (1 << Security_Enabled) | (1 << Security_Locked);
+	break;
+    case F:
+        status = (1 << Security_Enabled) | (1 << Security_Frozen);
+	break;
+    case G:
+        status = (1 << Security_Enabled) | (1 << Security_Locked) | (1 << Security_Count_Expired);
+	break;
+    case A:
+    case B:
+    default:
+        status = 0;
+	break;
+    }
+
+    len = min(PAGE_SIZE - (prp1 % PAGE_SIZE), sizeof(status));
+    nvme_dma_mem_write(prp1, (uint8_t *) &status, len);
+    if (len != sizeof(status)) {
+        nvme_dma_mem_write(prp2, ((uint8_t *)&status) + len, sizeof(status) - len);
+    }
+    return 0;
+}
+
 static uint32_t aon_cmd_sec_recv(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 {
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
@@ -1963,14 +2009,25 @@ static uint32_t aon_cmd_sec_recv(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         case 0x0000:
             return nvme_supported_security_protocols(n, cmd, cqe, tl);
         default:
-            LOG_NORM("%s(): secp:%d bad security protocol specific:%d",
+            LOG_NORM("%s(): secp:%x bad security protocol specific:%x",
                 __func__, secp, spsp);
             sf->sc = NVME_SC_INVALID_FIELD;
             return FAIL;
         }
         break;
+    case 0xef:
+       switch (spsp) {
+       case 0x0000:
+            return nvme_security_state(n, cmd, cqe, tl);
+       default:
+            LOG_NORM("%s(): secp:%x bad security protocol specific:%x",
+                __func__, secp, spsp);
+            sf->sc = NVME_SC_INVALID_FIELD;
+            return FAIL;
+       }
+       break;
     default:
-        LOG_NORM("%s(): bad security protocol secp:%d", __func__, secp);
+        LOG_NORM("%s(): bad security protocol secp:%x", __func__, secp);
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }

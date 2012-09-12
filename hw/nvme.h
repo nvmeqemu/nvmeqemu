@@ -612,6 +612,14 @@ typedef enum SecurityState {
     H = 'H',
 } SecurityState;
 
+typedef enum SecurityStatus {
+    Reserved = 0,
+    Security_Enabled = 1,
+    Security_Locked = 2,
+    Security_Frozen = 3,
+    Security_Count_Expired = 4,
+} SecurityStatus;
+
 enum  {
     ATA_SEC_SET_PASSWORD        = 0xf1,
     ATA_SEC_UNLOCK              = 0xf2,

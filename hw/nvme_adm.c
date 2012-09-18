@@ -465,7 +465,7 @@ static uint32_t adm_cmd_fw_log_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     LOG_NORM("%s called", __func__);
 
-    buf_len = ((cmd->cdw10 >> 16) & 0xfff) * 4;
+    buf_len = (((cmd->cdw10 >> 16) & 0xfff) + 1) * 4;
     trans_len = min(sizeof(*fw_info), buf_len);
 
     if (buf_len < sizeof(*fw_info)) {
@@ -490,7 +490,7 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     LOG_DBG("%s(): called", __func__);
 
-    buf_len = ((cmd->cdw10 >> 16) & 0xfff) * 4;
+    buf_len = (((cmd->cdw10 >> 16) & 0xfff) + 1) * 4;
     trans_len = min(sizeof(smart_log), buf_len);
 
     if (buf_len < sizeof(smart_log)) {

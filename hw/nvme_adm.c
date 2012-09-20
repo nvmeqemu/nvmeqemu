@@ -1686,6 +1686,7 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     if (disk->idtfy_ns.nsze != ns.nsze) {
         uint64_t size = ns.ncap * block_size;
+	pthread_rwlock_wrlock(&disk->mod_lock);
         if (disk->idtfy_ns.flbas & 0x10) {
             size += ns.ncap * disk->idtfy_ns.lbaf[lba_idx].ms;
         }
@@ -1697,16 +1698,19 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
         if (posix_fallocate(disk->fd, 0, size) != 0) {
             LOG_ERR("Error while modifying size of namespace");
+            pthread_rwlock_unlock(&disk->mod_lock);
             return FAIL;
         }
         disk->mapping_addr = mmap(NULL, size, PROT_READ | PROT_WRITE,
             MAP_SHARED, disk->fd, 0);
         if (disk->mapping_addr == NULL) {
             LOG_ERR("Error while opening namespace: %d", disk->nsid);
+            pthread_rwlock_unlock(&disk->mod_lock);
             return FAIL;
         }
         disk->mapping_size = size;
         if (nvme_create_meta_disk(n->instance, nsid, disk) != SUCCESS) {
+            pthread_rwlock_unlock(&disk->mod_lock);
             return FAIL;
         }
 
@@ -1717,6 +1721,7 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         }
         disk->nuse_thresh = ((double)ns.nsze) *
             (1 - ((double)NVME_SPARE_THRESH) / 100.0);
+        pthread_rwlock_unlock(&disk->mod_lock);
     }
 
     disk->idtfy_ns.nsze = ns.nsze;

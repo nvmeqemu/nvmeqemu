@@ -540,6 +540,8 @@ typedef struct DiskInfo {
     size_t mapping_size;
     uint8_t *mapping_addr;
 
+    pthread_rwlock_t mod_lock;
+
     size_t meta_mapping_size;
     uint8_t *meta_mapping_addr;
 

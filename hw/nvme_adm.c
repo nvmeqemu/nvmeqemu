@@ -1521,6 +1521,14 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     ns.nlbaf = n->aon_ctrl_vs->nlbaf;
     memcpy(ns.lbaf, n->aon_ctrl_vs->lbaf, sizeof(n->aon_ctrl_vs->lbaf));
+    if ((ns.flbas & 0xf) > ns.nlbaf) {
+        LOG_NORM("%s(): invalid flbas:%x, ctrl nlbaf:%d\n", __func__, ns.flbas,
+            ns.nlbaf);
+        sf->sc = NVME_AON_INVALID_LOGICAL_BLOCK_FORMAT;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        return FAIL;
+    }
+
     block_shift = ns.lbaf[ns.flbas & 0xf].lbads;
     ns_bytes = ns.nsze * (1 << block_shift);
     ms = ns.lbaf[ns.flbas].ms;
@@ -1552,7 +1560,8 @@ static uint32_t aon_adm_cmd_create_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
              (!(ns.flbas & 0x10) && !(ns.mc & 0x2)))) {
         LOG_NORM("%s(): invalid meta-data location settings mc:%x flbas:%x",
             __func__, ns.mc, ns.flbas);
-        sf->sc = NVME_SC_INVALID_FIELD;
+        sf->sc = NVME_AON_INVALID_LOGICAL_BLOCK_FORMAT;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
         return FAIL;
     }
 
@@ -1686,7 +1695,7 @@ static uint32_t aon_adm_cmd_mod_ns(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     if (disk->idtfy_ns.nsze != ns.nsze) {
         uint64_t size = ns.ncap * block_size;
-	pthread_rwlock_wrlock(&disk->mod_lock);
+        pthread_rwlock_wrlock(&disk->mod_lock);
         if (disk->idtfy_ns.flbas & 0x10) {
             size += ns.ncap * disk->idtfy_ns.lbaf[lba_idx].ms;
         }
@@ -1968,21 +1977,21 @@ static uint32_t nvme_security_state(NVMEState *n, NVMECmd *cmd,
     case E1:
     case H:
         status = (1 << Security_Enabled);
-	break;
+        break;
     case D:
         status = (1 << Security_Enabled) | (1 << Security_Locked);
-	break;
+        break;
     case F:
         status = (1 << Security_Enabled) | (1 << Security_Frozen);
-	break;
+        break;
     case G:
         status = (1 << Security_Enabled) | (1 << Security_Locked) | (1 << Security_Count_Expired);
-	break;
+        break;
     case A:
     case B:
     default:
         status = 0;
-	break;
+        break;
     }
 
     len = min(PAGE_SIZE - (prp1 % PAGE_SIZE), sizeof(status));

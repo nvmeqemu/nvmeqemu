@@ -825,7 +825,7 @@ static uint8_t aon_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     uint8_t *rb = range_buf;
     RangeDef *range_defs = (RangeDef *)range_buf;
 
-    LOG_DEBUG("perform aon dsm command, nr:%d attributes:%x", dsm->nr,
+    LOG_DBG("perform aon dsm command, nr:%d attributes:%x", dsm->nr,
         dsm->attributes);
     if (dsm->nstag == 0 || dsm->nstag > n->aon_ctrl_vs->mnon) {
         LOG_NORM("%s(): invalid nstag %d", __func__, dsm->nstag);

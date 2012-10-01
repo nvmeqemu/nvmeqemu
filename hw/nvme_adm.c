@@ -1844,7 +1844,7 @@ static uint32_t nvme_ata_security_send(NVMEState *n, NVMECmd *cmd,
             }
             return FAIL;
         }
-        n->s = E1;
+        n->s = F;
         break;
     case ATA_SEC_DISABLE_PASSWORD:
         if (n->s != H) {

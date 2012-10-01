@@ -894,7 +894,7 @@ static uint8_t aon_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     }
 
     disk = n->disk[nstag->nsid - 1];
-    data_len = dsm->nr * sizeof(RangeDef);
+    data_len = (dsm->nr + 1) * sizeof(RangeDef);
     assert(data_len <= PAGE_SIZE);
 
     prp_entries = (uint64_t) ((data_len + stag->smps - 1) / stag->smps);
@@ -934,7 +934,7 @@ static uint8_t aon_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
             rb += trans_len;
         }
 
-        for (i = 0; i < dsm->nr; i++, range_defs++) {
+        for (i = 0; i <= dsm->nr; i++, range_defs++) {
             uint64_t slba = range_defs->slba;
             uint32_t nlb = range_defs->length;
             if ((slba + nlb) > disk->idtfy_ns.ncap) {

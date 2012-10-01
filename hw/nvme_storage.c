@@ -31,6 +31,9 @@
 #define MASK_IDW        0x2
 #define MASK_IDR        0x1
 
+static uint8_t aon_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
+    uint32_t pdid);
+
 void nvme_dma_mem_read(target_phys_addr_t addr, uint8_t *buf, int len)
 {
     cpu_physical_memory_rw(addr, buf, len, 0);
@@ -486,10 +489,14 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     if (sqe->opcode == AON_CMD_USER_FLUSH) {
         return NVME_SC_SUCCESS;
     }
+    if (sqe->opcode == AON_CMD_USER_DSM) {
+        return aon_dsm_command(n, sqe, cqe, pdid);
+    }
     if (sqe->opcode != AON_CMD_USER_WRITE &&
-        sqe->opcode != AON_CMD_USER_READ) {
+            sqe->opcode != AON_CMD_USER_READ) {
         sf->sc = NVME_SC_INVALID_OPCODE;
         sf->dnr = 1;
+        LOG_NORM("unkown opcode:%x", sqe->opcode);
         return FAIL;
     }
     if (rw->nstag == 0 || rw->nstag > n->aon_ctrl_vs->mnon) {
@@ -803,6 +810,146 @@ static void dsm_dealloc(DiskInfo *disk, uint64_t slba, uint64_t nlb)
             disk->idtfy_ns.nuse--;
         }
     }
+}
+
+static uint8_t aon_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
+    uint32_t pdid)
+{
+    NVMEAonNStag     *nstag = NULL;
+    NVMEAonStag      *stag  = NULL;
+    DiskInfo         *disk  = NULL;
+    NVMEAonUserDSMCmd *dsm  = (NVMEAonUserDSMCmd *)sqe;
+    NVMEStatusField  *sf    = (NVMEStatusField *)&cqe->status;
+    uint64_t data_len, prp_entries, prp_offset, prp_index;
+    uint8_t range_buf[PAGE_SIZE];
+    uint8_t *rb = range_buf;
+    RangeDef *range_defs = (RangeDef *)range_buf;
+
+    LOG_DEBUG("perform aon dsm command, nr:%d attributes:%x", dsm->nr,
+        dsm->attributes);
+    if (dsm->nstag == 0 || dsm->nstag > n->aon_ctrl_vs->mnon) {
+        LOG_NORM("%s(): invalid nstag %d", __func__, dsm->nstag);
+        sf->sc = NVME_AON_INVALID_NAMESPACE_TAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        sf->dnr = 1;
+        return FAIL;
+    }
+    if (n->nstags[dsm->nstag - 1] == NULL) {
+        LOG_NORM("%s(): unallocated nstag %d", __func__, dsm->nstag);
+        sf->sc = NVME_AON_INVALID_NAMESPACE_TAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        sf->dnr = 1;
+        return FAIL;
+    }
+    if (pdid == 0 || pdid > n->aon_ctrl_vs->mnpd) {
+        LOG_NORM("%s(): Invalid pdid %d", __func__, pdid);
+        sf->sc = NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        sf->dnr = 1;
+        return FAIL;
+    }
+    if (n->protection_domains[pdid - 1] == NULL) {
+        LOG_ERR("%s(): pdid %d not allocated", __func__, pdid);
+        sf->sc = NVME_AON_INVALID_PROTECTION_DOMAIN_IDENTIFIER;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        sf->dnr = 1;
+        return FAIL;
+    }
+    if (dsm->stag == 0 || dsm->stag > n->aon_ctrl_vs->mnhr) {
+        LOG_NORM("%s(): Invalid stag %d", __func__, dsm->stag);
+        sf->sc = NVME_AON_INVALID_STAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        sf->dnr = 1;
+        return FAIL;
+    }
+    if (n->stags[dsm->stag - 1] == NULL) {
+        LOG_NORM("%s(): stag %d not allocated", __func__, dsm->stag);
+        sf->sc = NVME_AON_INVALID_STAG;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        sf->dnr = 1;
+        return FAIL;
+    }
+    nstag = n->nstags[dsm->nstag - 1];
+    stag = n->stags[dsm->stag - 1];
+
+    if (nstag->nsid == 0 || nstag->nsid > n->num_namespaces) {
+        LOG_ERR("%s(): bad nsid referenced nstag", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        sf->dnr = 1;
+        return FAIL;
+    }
+    if (n->disk[nstag->nsid - 1] == NULL) {
+        LOG_ERR("%s(): nsid unallocated", __func__);
+        sf->sc = NVME_SC_INVALID_NAMESPACE;
+        sf->dnr = 1;
+        return FAIL;
+    }
+    if (stag->pdid != pdid) {
+        LOG_NORM("%s(): queue pdid:%d not match stag pdid:%d", __func__, pdid,
+            stag->pdid);
+        sf->sc = NVME_AON_CONFLICTING_ATTRIBUTES;
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
+        sf->dnr = 1;
+        return FAIL;
+    }
+
+    disk = n->disk[nstag->nsid - 1];
+    data_len = dsm->nr * sizeof(RangeDef);
+    assert(data_len <= PAGE_SIZE);
+
+    prp_entries = (uint64_t) ((data_len + stag->smps - 1) / stag->smps);
+    prp_offset = dsm->sto;
+    if (prp_offset & 0x3) {
+        LOG_ERR("%s(): stag offset not aligned:%lx", __func__,
+            prp_offset);
+        sf->sc = NVME_SC_INVALID_FIELD;
+        sf->dnr = 1;
+        return FAIL;
+    }
+    prp_index = prp_offset / stag->smps;
+    if (prp_index + prp_entries > stag->nmp + 1) {
+        LOG_NORM("%s(): stag offset:%lu for %lu prps beyond prp list:%lu",
+            __func__, dsm->sto, prp_entries, stag->nmp);
+        sf->sc = NVME_AON_CONFLICTING_ATTRIBUTES;
+    }
+    if (dsm->attributes & MASK_AD) {
+        int i = 0;
+        uint64_t stag_page_end, mem_addr, trans_len, prp_list[prp_entries];
+
+        nvme_dma_mem_read(stag->prp + prp_index * sizeof(uint64_t),
+            (uint8_t *)prp_list, prp_entries * sizeof(uint64_t));
+
+        stag_page_end = prp_list[i] + stag->smps;
+        mem_addr = prp_list[i] + (prp_offset % stag->smps);
+        trans_len = min(data_len, stag_page_end - mem_addr);
+
+        nvme_dma_mem_read(mem_addr, rb, trans_len);
+        data_len -= trans_len;
+        rb += trans_len;
+        while (data_len) {
+            mem_addr = prp_list[++i];
+            trans_len = min(data_len, stag->smps);
+            nvme_dma_mem_read(mem_addr, rb, trans_len);
+            data_len -= trans_len;
+            rb += trans_len;
+        }
+
+        for (i = 0; i < dsm->nr; i++, range_defs++) {
+            uint64_t slba = range_defs->slba;
+            uint32_t nlb = range_defs->length;
+            if ((slba + nlb) > disk->idtfy_ns.ncap) {
+                LOG_ERR("Range #%d exceeds namespace capacity(%ld)", (i + 1),
+                    disk->idtfy_ns.ncap);
+                sf->sc = NVME_SC_LBA_RANGE;
+                sf->dnr = 1;
+                return FAIL;
+            }
+            LOG_NORM("DSM deallocate cmd for Range #%u, slba = %lu, nlb = %u",
+                i, slba, nlb);
+            dsm_dealloc(disk, slba, nlb);
+        }
+    }
+    return SUCCESS;
 }
 
 /*********************************************************************

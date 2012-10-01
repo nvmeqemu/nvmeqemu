@@ -891,6 +891,7 @@ enum {
     AON_CMD_USER_FLUSH = 0x40,
     AON_CMD_USER_WRITE = 0x41,
     AON_CMD_USER_READ = 0x42,
+    AON_CMD_USER_DSM = 0x49,
     NVME_CMD_LAST,
 };
 
@@ -1201,6 +1202,21 @@ typedef struct NVMEAonUserRwCmd {
     uint32_t elbat:16;      /* CDW15[0-15] Expected Logical Block Application Tag*/
     uint32_t elbatm:16;
 } NVMEAonUserRwCmd;
+
+typedef struct NVMEAonUserDSMCmd {
+    uint8_t  opcode;
+    uint8_t  fuse;
+    uint16_t cid;
+    uint32_t nstag;         /* CDW[1]: Namespace Tag */
+    uint64_t res1[2];       /* CDW[2-5]*/
+    uint64_t sto;           /* CDW[6-7] STag Offset */
+    uint32_t res2;          /* CDW[8] */
+    uint32_t stag;          /* CDW[9]: STag */
+    uint8_t  nr;            /* lower CDW 10, number of ranges */
+    uint8_t  res3[3];       /* upper CDW 10 */
+    uint32_t attributes;
+    uint32_t res4[4];       /* CDW[12-15] */
+} NVMEAonUserDSMCmd;
 
 typedef struct NVMEStatusField {
     uint16_t p:1;   /* phase tag */

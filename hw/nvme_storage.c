@@ -473,7 +473,6 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     NVMEAonNStag     *nstag = NULL;
     NVMEAonStag      *stag  = NULL;
     NVMEAonStag      *mstag = NULL;
-    NVMEAonPD        *pd    = NULL;
     DiskInfo         *disk  = NULL;
 
     uint8_t *mapping_addr;
@@ -558,7 +557,6 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
 
     nstag = n->nstags[rw->nstag - 1];
     stag = n->stags[rw->stag - 1];
-    pd = n->protection_domains[pdid - 1];
     if (rw->mdstag) {
         mstag = n->stags[rw->mdstag - 1];
     }

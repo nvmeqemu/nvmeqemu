@@ -582,15 +582,18 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
     }
 
     disk = n->disk[nstag->nsid - 1];
+    pthread_rwlock_rdlock(&disk->mod_lock);
     if ((rw->slba + rw->nlb) >= disk->idtfy_ns.nsze) {
         LOG_NORM("%s(): LBA out of range", __func__);
         sf->sc = NVME_SC_LBA_RANGE;
         sf->dnr = 1;
+        pthread_rwlock_unlock(&disk->mod_lock);
         return FAIL;
     } else if ((rw->slba + rw->nlb) >= disk->idtfy_ns.ncap) {
         LOG_NORM("%s(): Capacity Exceeded", __func__);
         sf->sc = NVME_SC_CAP_EXCEEDED;
         sf->dnr = 1;
+        pthread_rwlock_unlock(&disk->mod_lock);
         return FAIL;
     }
 
@@ -603,6 +606,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         LOG_NORM("%s(): Namespace not ready", __func__);
         sf->sc = NVME_SC_NS_NOT_READY;
         sf->dnr = 1;
+        pthread_rwlock_unlock(&disk->mod_lock);
         return FAIL;
     }
     if (n->idtfy_ctrl.mdts && data_size > PAGE_SIZE *
@@ -611,6 +615,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
             data_size, ((uint64_t)PAGE_SIZE) * (1 << (n->idtfy_ctrl.mdts)));
         sf->sc = NVME_SC_INVALID_FIELD;
         sf->dnr = 1;
+        pthread_rwlock_unlock(&disk->mod_lock);
         return FAIL;
     }
 
@@ -623,6 +628,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
             prp_offset);
         sf->sc = NVME_SC_INVALID_FIELD;
         sf->dnr = 1;
+        pthread_rwlock_unlock(&disk->mod_lock);
         return FAIL;
     }
 
@@ -633,6 +639,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
             __func__, rw->sto, prp_entries, stag->nmp);
         sf->sc = NVME_AON_CONFLICTING_ATTRIBUTES;
         sf->dnr = 1;
+        pthread_rwlock_unlock(&disk->mod_lock);
         return FAIL;
     }
     {
@@ -689,6 +696,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
         if (disk->meta_mapping_addr == NULL) {
             LOG_NORM("%s(): meta data requested for disk with no meta-data",
                 __func__);
+            pthread_rwlock_unlock(&disk->mod_lock);
             return FAIL;
         }
 
@@ -705,6 +713,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
             LOG_NORM("%s(): stag offset:%lu for %lu prps beyond prp list:%lu",
                 __func__, rw->sto, prp_entries, stag->nmp);
             sf->sc = NVME_AON_CONFLICTING_ATTRIBUTES;
+            pthread_rwlock_unlock(&disk->mod_lock);
             return FAIL;
         }
         {
@@ -749,6 +758,7 @@ uint8_t nvme_aon_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe,
             }
         }
     }
+    pthread_rwlock_unlock(&disk->mod_lock);
     return NVME_SC_SUCCESS;
 }
 

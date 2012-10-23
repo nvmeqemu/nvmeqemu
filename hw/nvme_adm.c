@@ -878,8 +878,7 @@ static uint32_t do_features(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
                     (((uint8_t *)&(rt)) + len),
                     (sizeof(rt) - len));
             }
-            disk->range_type.type = rt.type;
-            disk->range_type.attributes = rt.attributes;
+	    memcpy(&disk->range_type, &rt, sizeof(rt));
         } else {
             nvme_dma_mem_write(cmd->prp1, (uint8_t *)&disk->range_type, len);
             if (len != sizeof(disk->range_type)) {

@@ -548,6 +548,9 @@ typedef struct NVMEState {
     uint16_t outstanding_asyncs;
 
     QSIMPLEQ_HEAD(async_queue, AsyncEvent) async_queue;
+    /* Masks for async event requests */
+    uint8_t err_sts_mask; /* error status event mask */
+    uint8_t smart_mask; /* smart/health status event mask */
 } NVMEState;
 
 /* Structure used for default initialization sequence (except doorbell) */

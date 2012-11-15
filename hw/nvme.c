@@ -745,6 +745,8 @@ static void clear_nvme_device(NVMEState *n)
     n->outstanding_asyncs = 0;
     n->feature.temperature_threshold = NVME_TEMPERATURE + 10;
     n->temp_warn_issued = 0;
+    n->err_sts_mask = 0;
+    n->smart_mask = 0;
 
     QSIMPLEQ_INIT(&n->async_queue);
 }
@@ -1082,6 +1084,8 @@ static int pci_nvme_init(PCIDevice *pci_dev)
     n->outstanding_asyncs = 0;
     n->async_event_timer = qemu_new_timer_ns(vm_clock,
         async_process_cb, n);
+    n->err_sts_mask = 0;
+    n->smart_mask = 0;
 
     QSIMPLEQ_INIT(&n->async_queue);
 

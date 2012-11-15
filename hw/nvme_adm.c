@@ -611,6 +611,7 @@ static uint32_t adm_cmd_get_log_page(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     NVMEAdmCmdGetLogPage *c = (NVMEAdmCmdGetLogPage *)cmd;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     sf->sc = NVME_SC_SUCCESS;
+    uint8_t ret = 0;
 
     if (cmd->opcode != NVME_ADM_CMD_GET_LOG_PAGE) {
         LOG_NORM("%s(): Invalid opcode %d", __func__, cmd->opcode);
@@ -622,19 +623,24 @@ static uint32_t adm_cmd_get_log_page(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
 
     switch (c->lid) {
     case NVME_LOG_ERROR_INFORMATION:
+        n->err_sts_mask = 0;
         break;
     case NVME_LOG_SMART_INFORMATION:
-        return adm_cmd_smart_info(n, cmd, cqe);
+        n->smart_mask = 0;
+        ret = adm_cmd_smart_info(n, cmd, cqe);
         break;
     case NVME_LOG_FW_SLOT_INFORMATION:
-        return adm_cmd_fw_log_info(n, cmd, cqe);
+        ret = adm_cmd_fw_log_info(n, cmd, cqe);
         break;
     default:
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_INVALID_LOG_PAGE;
         break;
     }
-    return 0;
+
+    qemu_mod_timer(n->async_event_timer,
+        qemu_get_clock_ns(vm_clock) + 20000);
+    return ret;
 }
 
 static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
@@ -1204,7 +1210,7 @@ void async_process_cb(void *param)
     NVMEState *n = (NVMEState *)param;
     target_phys_addr_t addr;
     AsyncResult *result;
-    AsyncEvent *event;
+    AsyncEvent *event, *next;
 
     if (n->outstanding_asyncs <= 0) {
         LOG_NORM("%s(): called without an outstanding async event", __func__);
@@ -1218,31 +1224,47 @@ void async_process_cb(void *param)
     LOG_NORM("%s(): called outstanding asyncs:%d", __func__,
         n->outstanding_asyncs);
 
-    while ((event = QSIMPLEQ_FIRST(&n->async_queue)) != NULL &&
-            n->outstanding_asyncs > 0) {
-        QSIMPLEQ_REMOVE_HEAD(&n->async_queue, entry);
+    if (n->outstanding_asyncs > 0) {
+        QSIMPLEQ_FOREACH_SAFE(event, &n->async_queue, entry, next) {
+            if (!n->err_sts_mask &&
+                (event->result.event_type == event_type_error)) {
+                n->err_sts_mask = 0x1;
+            } else if (!n->smart_mask &&
+                (event->result.event_type == event_type_smart)) {
+                n->smart_mask = 0x1;
+            } else {
+                LOG_DBG("%s(): Async event type %d is masked, use GetLogPage "
+                    "to unmask.", __func__,event->result.event_type);
+                continue;
+            }
 
-        result = (AsyncResult *)&cqe.cmd_specific;
-        result->event_type = event->result.event_type;
-        result->event_info = event->result.event_info;
-        result->log_page   = event->result.log_page;
+            QSIMPLEQ_REMOVE_HEAD(&n->async_queue, entry);
 
-        qemu_free(event);
+            result = (AsyncResult *)&cqe.cmd_specific;
+            result->event_type = event->result.event_type;
+            result->event_info = event->result.event_info;
+            result->log_page   = event->result.log_page;
 
-        n->outstanding_asyncs--;
+            qemu_free(event);
 
-        cqe.sq_id = 0;
-        cqe.sq_head = n->sq[0].head;
-        cqe.command_id = n->async_cid[n->outstanding_asyncs];
+            n->outstanding_asyncs--;
 
-        sf->sc = NVME_SC_SUCCESS;
-        sf->p = n->cq[0].phase_tag;
-        sf->m = 0;
-        sf->dnr = 0;
+            cqe.sq_id = 0;
+            cqe.sq_head = n->sq[0].head;
+            cqe.command_id = n->async_cid[n->outstanding_asyncs];
 
-        addr = n->cq[0].dma_addr + n->cq[0].tail * sizeof(cqe);
-        nvme_dma_mem_write(addr, (uint8_t *)&cqe, sizeof(cqe));
-        incr_cq_tail(&n->cq[0]);
+            sf->sc = NVME_SC_SUCCESS;
+            sf->p = n->cq[0].phase_tag;
+            sf->m = 0;
+            sf->dnr = 0;
+
+            addr = n->cq[0].dma_addr + n->cq[0].tail * sizeof(cqe);
+            nvme_dma_mem_write(addr, (uint8_t *)&cqe, sizeof(cqe));
+            incr_cq_tail(&n->cq[0]);
+
+            if (n->outstanding_asyncs == 0)
+                break;
+        }
     }
     msix_notify(&(n->dev), 0);
 }
@@ -1261,6 +1283,7 @@ static uint32_t adm_cmd_async_ev_req(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
     if (n->outstanding_asyncs > n->idtfy_ctrl->aerl) {
         LOG_NORM("%s(): too many asyncs %d %d", __func__, n->outstanding_asyncs,
             n->idtfy_ctrl->aerl);
+        sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_ASYNC_EVENT_LIMIT_EXCEEDED;
         return FAIL;
     }

@@ -479,7 +479,7 @@ static uint32_t adm_cmd_fw_log_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
                 sizeof(*fw_info), buf_len);
     }
 
-    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), trans_len);
+    len = min(n->host_page_size - (cmd->prp1 % n->host_page_size), trans_len);
     nvme_dma_mem_write(cmd->prp1, (uint8_t *)fw_info, len);
     if (len < trans_len) {
         nvme_dma_mem_write(cmd->prp2, (uint8_t *)((uint8_t *)fw_info + len),
@@ -597,7 +597,7 @@ static uint32_t adm_cmd_smart_info(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         smart_log.critical_warning |= 1 << 1;
     }
 
-    len = min(PAGE_SIZE - (cmd->prp1 % PAGE_SIZE), trans_len);
+    len = min(n->host_page_size - (cmd->prp1 % n->host_page_size), trans_len);
     nvme_dma_mem_write(cmd->prp1, (uint8_t *)&smart_log, len);
     if (len < trans_len) {
         nvme_dma_mem_write(cmd->prp2, (uint8_t *)((uint8_t *)&smart_log + len),
@@ -643,7 +643,7 @@ static uint32_t adm_cmd_id_ctrl(NVMEState *n, NVMECmd *cmd)
     LOG_NORM("%s(): copying %lu data into addr %lu",
         __func__, sizeof(*n->idtfy_ctrl), cmd->prp1);
 
-    len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
+    len = n->host_page_size - (cmd->prp1 % n->host_page_size);
     nvme_dma_mem_write(cmd->prp1, (uint8_t *) n->idtfy_ctrl, len);
     if (len != sizeof(*(n->idtfy_ctrl))) {
         nvme_dma_mem_write(cmd->prp2,
@@ -662,7 +662,7 @@ static uint32_t adm_cmd_id_ns(NVMEState *n, NVMECmd *cmd)
     LOG_DBG("Current Namespace utilization: %lu",
         n->disk[(cmd->nsid - 1)].idtfy_ns.nuse);
 
-    len = PAGE_SIZE - (cmd->prp1 % PAGE_SIZE);
+    len = n->host_page_size - (cmd->prp1 % n->host_page_size);
     nvme_dma_mem_write(cmd->prp1,
         (uint8_t *) &n->disk[(cmd->nsid - 1)].idtfy_ns, len);
     if (len != sizeof(n->disk[(cmd->nsid - 1)].idtfy_ns)) {
@@ -1059,7 +1059,7 @@ static uint8_t do_dlfw_prp(NVMEState *n, uint64_t mem_addr,
     }
 
     /* Data Len to be written per page basis */
-    data_len = PAGE_SIZE - (mem_addr % PAGE_SIZE);
+    data_len = n->host_page_size - (mem_addr % n->host_page_size);
     if (data_len > *data_size_p) {
         data_len = *data_size_p;
     }
@@ -1083,17 +1083,17 @@ static uint8_t do_dlfw_prp_list(NVMEState *n, NVMECmd *cmd,
     LOG_DBG("Data Size remaining for FW Image:%ld", *data_size_p);
 
     /* Logic to find the number of PRP Entries */
-    prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) / PAGE_SIZE);
+    prp_entries = (uint64_t) ((*data_size_p + n->host_page_size - 1) / n->host_page_size);
     nvme_dma_mem_read(cmd->prp2, (uint8_t *)prp_list,
         min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
 
     i = 0;
     /* Read/Write on PRPList */
     while (*data_size_p != 0) {
-        if (i == 511 && *data_size_p > PAGE_SIZE) {
+        if (i == 511 && *data_size_p > n->host_page_size) {
             /* Calculate the actual number of remaining entries */
-            prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) /
-                PAGE_SIZE);
+            prp_entries = (uint64_t) ((*data_size_p + n->host_page_size - 1) /
+                n->host_page_size);
             nvme_dma_mem_read(prp_list[511], (uint8_t *)prp_list,
                 min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
             i = 0;
@@ -1131,7 +1131,7 @@ static uint32_t fw_get_img(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe,
         return FAIL;
     }
     if (data_size > 0) {
-        if (data_size <= PAGE_SIZE) {
+        if (data_size <= n->host_page_size) {
             res = do_dlfw_prp(n, cmd->prp2, &data_size, &buf_offset, buf);
         } else {
             res = do_dlfw_prp_list(n, cmd, &data_size, &buf_offset, buf);

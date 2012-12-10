@@ -31,7 +31,7 @@
 #define MASK_IDW        0x2
 #define MASK_IDR        0x1
 
-static uint8_t read_dsm_ranges(uint64_t range_prp1, uint64_t range_prp2,
+static uint8_t read_dsm_ranges(NVMEState *n, uint64_t range_prp1, uint64_t range_prp2,
     uint8_t *buffer_addr, uint64_t *data_size_p);
 static void dsm_dealloc(DiskInfo *disk, uint64_t slba, uint64_t nlb);
 
@@ -56,7 +56,7 @@ static uint8_t do_rw_prp(NVMEState *n, uint64_t mem_addr, uint64_t *data_size_p,
     }
 
     /* Data Len to be written per page basis */
-    data_len = PAGE_SIZE - (mem_addr % PAGE_SIZE);
+    data_len = n->host_page_size - (mem_addr % n->host_page_size);
     if (data_len > *data_size_p) {
         data_len = *data_size_p;
     }
@@ -94,16 +94,16 @@ static uint8_t do_rw_prp_list(NVMEState *n, NVMECmd *command,
     LOG_DBG("Data Size remaining for read/write:%ld", *data_size_p);
 
     /* Logic to find the number of PRP Entries */
-    prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) / PAGE_SIZE);
+    prp_entries = (uint64_t) ((*data_size_p + n->host_page_size - 1) / n->host_page_size);
     nvme_dma_mem_read(cmd->prp2, (uint8_t *)prp_list,
         min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
 
     /* Read/Write on PRPList */
     while (*data_size_p != 0) {
-        if (i == 511 && *data_size_p > PAGE_SIZE) {
+        if (i == 511 && *data_size_p > n->host_page_size) {
             /* Calculate the actual number of remaining entries */
-            prp_entries = (uint64_t) ((*data_size_p + PAGE_SIZE - 1) /
-                PAGE_SIZE);
+            prp_entries = (uint64_t) ((*data_size_p + n->host_page_size - 1) /
+                n->host_page_size);
             nvme_dma_mem_read(prp_list[511], (uint8_t *)prp_list,
                 min(sizeof(prp_list), prp_entries * sizeof(uint64_t)));
             i = 0;
@@ -252,10 +252,10 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
         data_size += (disk->idtfy_ns.lbafx[lba_idx].ms * (e->nlb + 1));
     }
 
-    if (n->idtfy_ctrl->mdts && data_size > PAGE_SIZE *
+    if (n->idtfy_ctrl->mdts && data_size > n->host_page_size *
                 (1 << (n->idtfy_ctrl->mdts))) {
         LOG_ERR("%s(): data size:%ld exceeds max:%ld", __func__,
-            data_size, ((uint64_t)PAGE_SIZE) * (1 << (n->idtfy_ctrl->mdts)));
+            data_size, ((uint64_t)n->host_page_size) * (1 << (n->idtfy_ctrl->mdts)));
         sf->sc = NVME_SC_INVALID_FIELD;
         return FAIL;
     }
@@ -277,7 +277,7 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
         return FAIL;
     }
     if (data_size > 0) {
-        if (data_size <= PAGE_SIZE) {
+        if (data_size <= n->host_page_size) {
             res = do_rw_prp(n, e->prp2, &data_size, &file_offset, mapping_addr,
                 e->opcode);
         } else {
@@ -328,13 +328,13 @@ uint8_t nvme_io_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
                       uint64_t  * : total data to be copied to target
                                     buffer
 *********************************************************************/
-static uint8_t read_dsm_ranges(uint64_t range_prp1, uint64_t range_prp2,
+static uint8_t read_dsm_ranges(NVMEState *n, uint64_t range_prp1, uint64_t range_prp2,
     uint8_t *buffer_addr, uint64_t *data_size_p)
 {
     uint64_t data_len;
 
     /* Data Len to be written per page basis */
-    data_len = PAGE_SIZE - (range_prp1 % PAGE_SIZE);
+    data_len = n->host_page_size - (range_prp1 % n->host_page_size);
     if (data_len > *data_size_p) {
         data_len = *data_size_p;
     }
@@ -388,7 +388,7 @@ uint8_t nvme_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
     uint16_t nr, i;
     NVMEStatusField *sf = (NVMEStatusField *)&cqe->status;
     DiskInfo *disk;
-    uint8_t range_buff[PAGE_SIZE];
+    uint8_t range_buff[n->host_page_size];
     RangeDef *range_defs = (RangeDef *)range_buff;
     uint64_t slba, nlb;
     uint64_t buff_size;
@@ -399,9 +399,8 @@ uint8_t nvme_dsm_command(NVMEState *n, NVMECmd *sqe, NVMECQE *cqe)
     disk = &n->disk[sqe->nsid - 1];
     nr = (sqe->cdw10 & 0xFF) + 1; /* Convert num ranges to 1-based value */
     buff_size = nr * sizeof(RangeDef);
-    assert(buff_size <= PAGE_SIZE);
 
-    read_dsm_ranges(sqe->prp1, sqe->prp2, range_buff, &buff_size);
+    read_dsm_ranges(n, sqe->prp1, sqe->prp2, range_buff, &buff_size);
 
     LOG_NORM("Processing ranges %d, attribute %d", nr, sqe->cdw11);
     /* Process dsm cmd for attribute deallocate. */

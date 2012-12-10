@@ -489,6 +489,7 @@ typedef struct NVMEState {
     int bar0_size;
     uint8_t nvectors;
 
+    unsigned int host_page_size; /* it is possible to set different page sizes through CC reg */
     /* Space for NVME Ctrl Space except doorbells */
     uint8_t *cntrl_reg;
     /* Masks for NVME Ctrl Registers */

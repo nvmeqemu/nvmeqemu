@@ -755,7 +755,7 @@ static uint32_t adm_cmd_abort(NVMEState *n, NVMECmd *cmd, NVMECQE *cqe)
         sf->sc = NVME_SC_INVALID_NAMESPACE;
         return FAIL;
     }
-    if (c->sqid == 0 || adm_check_sqid(n, c->sqid)) {
+    if (adm_check_sqid(n, c->sqid)) {
         LOG_NORM("Invalid queue:%d to abort", c->sqid);
         sf->sct = NVME_SCT_CMD_SPEC_ERR;
         sf->sc = NVME_REQ_CMD_TO_ABORT_NOT_FOUND;

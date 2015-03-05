@@ -334,6 +334,8 @@ static void nvme_mmio_writel(void *opaque, target_phys_addr_t addr,
                  */
                 if (nvme_dev->cq[ACQ_ID].dma_addr &&
                     nvme_dev->sq[ASQ_ID].dma_addr) {
+                    /* set host page size based on value passed by host */
+                     nvme_dev->host_page_size = 1 << (12 + ((val >> 7) & 0xf));
                     /* Update CSTS.RDY based on CC.EN and set the phase tag */
                     nvme_dev->cntrl_reg[NVME_CTST] |= CC_EN ;
                     nvme_dev->cq[ACQ_ID].phase_tag = 1;
